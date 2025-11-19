@@ -15,9 +15,9 @@ from aiogram.types import (
 )
 
 # ====== НАЛАШТУВАННЯ З АРХІВУ / RAILWAY ======
-BOT_TOKEN = os.getenv("8217510476:AAEV4Svb3w_jqeazRsI9dy4OYJ1pH-ui7CQ")
-ADMIN_ID = int(os.getenv("225843530", "0"))
-PARTY_CHAT_LINK = os.getenv("https://t.me/rizdvo_party_chat")  # типу "https://t.me/your_chat"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+PARTY_CHAT_LINK = os.getenv("PARTY_CHAT_LINK")  # типу "https://t.me/your_chat"
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не заданий в змінних середовища")
