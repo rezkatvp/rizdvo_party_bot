@@ -14,7 +14,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-from aiogram.enums import ParseMode
+    from aiogram.enums import ParseMode
 
 # ================== ENV CONFIG ==================
 
@@ -27,17 +27,16 @@ PARTY_CHAT_LINK = os.getenv("PARTY_CHAT_LINK")
 PARTY_CHANNEL_ID = os.getenv("PARTY_CHANNEL_ID")
 # лінк на канал (https://t.me/...)
 PARTY_CHANNEL_LINK = os.getenv("PARTY_CHANNEL_LINK")
-# id групового чату (для кіка при виході з вечірки), опціонально
-PARTY_CHAT_ID = int(os.getenv("PARTY_CHAT_ID", "0") or "0")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не заданий в змінних середовища")
 
-# ================== КОНСТАНТИ ВЕЧІРКИ ==================
+# ================== ДАНІ ВЕЧІРКИ (адмін може змінити) ==================
 
 PARTY_NAME = "Різдвяний Спектр"
 PARTY_LOCATION = "селище Бабинці"
 PARTY_DATES_TEXT = "24–25 грудня 2025 року"
+PARTY_DESCRIPTION: Optional[str] = None
 
 PARTY_RULES = (
     "📜 <b>Правила вечірки «Різдвяний Спектр»</b>\n\n"
@@ -80,16 +79,17 @@ SANTA = SantaConfig()
 
 # ================== ПАМʼЯТЬ В ПРОЦЕСІ ==================
 
-# user_id -> дані
 USERS: Dict[int, Dict[str, Any]] = {}
-
-# pending actions: user_id -> string key
 PENDING_ACTION: Dict[int, str] = {}
+PENDING_CONTEXT: Dict[int, Any] = {}  # текст листівки в канал
+PARTY_DRAFT: Dict[str, Any] = {}      # тимчасові дані при створенні вечірки
 
-# додатковий контекст для адміна (наприклад текст листівки)
-PENDING_CONTEXT: Dict[int, Any] = {}
+# Whitelist запрошених гостей
+ALLOWED_USERNAMES: set[str] = set()   # зберігаємо в lower, можна з @ або без
+ALLOWED_IDS: set[int] = set()
 
-# Кольори / ролі / завдання
+# ================== КОЛЬОРИ / РОЛІ / ЗАВДАННЯ ==================
+
 COLORS = [
     {
         "id": 1,
@@ -163,7 +163,6 @@ COLORS = [
         ],
         "taken_by": None,
     },
-    # За бажанням можна додати ще до 14 кольорів
 ]
 
 
@@ -197,23 +196,46 @@ def get_available_colors():
     return [c for c in COLORS if c["taken_by"] is None]
 
 
-# ================== КЛАВІАТУРИ ==================
+def is_user_allowed(message: Message) -> bool:
+    """
+    Якщо список запрошених пустий — пускаємо всіх (для тестів).
+    Якщо запрошені є — перевіряємо username або id.
+    """
+    if not ALLOWED_USERNAMES and not ALLOWED_IDS:
+        return True
+
+    u = message.from_user
+    if u.id in ALLOWED_IDS:
+        return True
+    if u.username:
+        uname = u.username.lower()
+        if uname in ALLOWED_USERNAMES or f"@{uname}" in ALLOWED_USERNAMES:
+            return True
+    return False
+
+
+# ================== КЛАВІШІ ==================
 
 
 def main_menu_kb(user: Dict[str, Any]) -> ReplyKeyboardMarkup:
-    buttons = [
-        [KeyboardButton(text="🎨 Мій колір"), KeyboardButton(text="🧩 Моя роль і завдання")],
-        [KeyboardButton(text="🍲 Моя страва і напій"), KeyboardButton(text="ℹ️ Про вечірку")],
+    keyboard = [
+        [KeyboardButton(text="🎅 Таємний Миколайчик")],
+        [KeyboardButton(text="📜 Гості та меню"), KeyboardButton(text="ℹ️ Про вечірку")],
+        [KeyboardButton(text="💬 Чат"), KeyboardButton(text="📢 Канал")],
+        [KeyboardButton(text="🎨 Моє меню")],
+        [KeyboardButton(text="⭐ Звʼязатись з Сантою")],
     ]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-    if user.get("participant"):
-        buttons.append([KeyboardButton(text="🎅 Мій Миколайчик")])
-        buttons.append([KeyboardButton(text="📜 Гості та меню")])
 
-    buttons.append([KeyboardButton(text="💬 Чат вечірки")])
-    buttons.append([KeyboardButton(text="⭐ Фідбек / питання")])
-
-    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+def my_menu_kb() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="🎨 Мій колір")],
+        [KeyboardButton(text="🧩 Моя роль і завдання")],
+        [KeyboardButton(text="🍽 Моя страва і напій")],
+        [KeyboardButton(text="↩️ Назад")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
 def colors_inline_kb() -> InlineKeyboardMarkup:
@@ -225,9 +247,9 @@ def colors_inline_kb() -> InlineKeyboardMarkup:
     rows = []
     row = []
     for c in available:
-        text = c["emoji"]  # тільки емодзі, щоб влізло більше
+        text = c["emoji"]  # тільки емодзі, без тексту
         row.append(InlineKeyboardButton(text=text, callback_data=f"color:{c['id']}"))
-        if len(row) == 2:
+        if len(row) == 5:
             rows.append(row)
             row = []
     if row:
@@ -262,6 +284,7 @@ def santa_chat_kb(user: Dict[str, Any]) -> InlineKeyboardMarkup:
 def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="🎉 Створити вечірку", callback_data="admin_create_party")],
             [InlineKeyboardButton(text="👥 Список гостей", callback_data="admin_guests")],
             [InlineKeyboardButton(text="🎨 Кольори/ролі", callback_data="admin_colors")],
             [InlineKeyboardButton(text="🎅 Налаштування Миколайчика", callback_data="admin_santa")],
@@ -287,55 +310,37 @@ def admin_santa_menu_kb() -> InlineKeyboardMarkup:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
+    if not is_user_allowed(message):
+        await message.answer(
+            "Тебе немає у списку гостей 🙈\n"
+            "Якщо вважаєш, що це помилка — звернись до організатора."
+        )
+        return
+
     user = get_user(message.from_user.id)
     user["name"] = message.from_user.full_name
     user["username"] = message.from_user.username
 
+    loc_spoiler = f'<span class="tg-spoiler">📍 {PARTY_LOCATION}</span>'
+
     text = (
-        f"Вау, ну що ж я вітаю тебе на вечірці <b>«{PARTY_NAME}»</b>!\n\n"
-        "Я внесу тебе до списку гостей, підкажу, як підготуватися до свята "
-        "і нагадаю про всі важливі дрібниці.\n\n"
-        "Скажи, ти будеш на вечірці?"
+        "Вау, ну що ж, вітаю тебе на вечірці! 🎄\n\n"
+        "Для початку ось основні дані та наші правила. "
+        "Ознайомся з ними і підтверди участь у вечірці:\n\n"
+        f"🎄 <b>{PARTY_NAME}</b>\n"
+        f"{loc_spoiler}\n"
+        f"🗓 {PARTY_DATES_TEXT}\n\n"
+        f"{PARTY_RULES}"
     )
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🎉 Так, я буду!", callback_data="party_yes")],
-            [InlineKeyboardButton(text="🙈 Я просто дивлюсь", callback_data="party_no")],
+            [InlineKeyboardButton(text="✅ Мені все підходить", callback_data="party_yes")],
+            [InlineKeyboardButton(text="🙈 Відмовитись", callback_data="party_no")],
         ]
     )
 
     await message.answer(text, reply_markup=kb)
-
-
-@router.message(F.text == "📜 Гості та меню")
-async def guests_menu_for_user(message: Message):
-    lines = ["📜 <b>Гості та меню</b>"]
-    has_any = False
-
-    for uid, data in USERS.items():
-        if not data.get("participant"):
-            continue
-        has_any = True
-
-        name = data.get("name") or f"Гість {uid}"
-        role_txt = "-"
-        if data.get("color_id"):
-            c = get_color_by_id(data["color_id"])
-            if c:
-                role_txt = c["role"]
-
-        dish_txt = data.get("dish") or "—"
-        drink_txt = data.get("drink") or "—"
-
-        lines.append(
-            f"• <b>{name}</b> | Роль: {role_txt} | Страва: {dish_txt} | Напій: {drink_txt}"
-        )
-
-    if not has_any:
-        lines.append("Поки ще ніхто не додав свої дані 🤔")
-
-    await message.answer("\n".join(lines))
 
 
 @router.callback_query(F.data == "party_yes")
@@ -345,7 +350,7 @@ async def cb_party_yes(callback: CallbackQuery):
 
     await callback.message.edit_text(
         "Круто, записав тебе як учасника «Різдвяного Спектру» 🎄\n\n"
-        "Спочатку оберемо твій персональний 🎨 колір. "
+        "Тепер оберемо твій персональний 🎨 колір. "
         "Кожен колір можна зайняти тільки один раз.",
         reply_markup=colors_inline_kb(),
     )
@@ -354,8 +359,7 @@ async def cb_party_yes(callback: CallbackQuery):
 @router.callback_query(F.data == "party_no")
 async def cb_party_no(callback: CallbackQuery):
     await callback.message.edit_text(
-        "Окей, можеш просто підглядати за підготовкою 😉\n"
-        "Якщо передумаєш — напиши /start."
+        "Окей, якщо передумаєш — просто напиши мені ще раз /start 🙈"
     )
 
 
@@ -385,17 +389,15 @@ async def cb_choose_color(callback: CallbackQuery):
     color["taken_by"] = callback.from_user.id
     user["color_id"] = color_id
 
-    # вибираємо випадкове завдання для цього користувача
+    # випадкове завдання
     if color["tasks"]:
         user["task_index"] = random.randint(0, len(color["tasks"]) - 1)
     else:
         user["task_index"] = None
 
-    spoof_task = (
-        color["tasks"][user["task_index"]] if user["task_index"] is not None else "Завдання ще не задано."
-    )
-    spoiler_text = f"Колір: {color['emoji']} {color['name']}\nЗавдання: {spoof_task}"
-    spoiler_html = f"<span class=\"tg-spoiler\">{spoiler_text}</span>"
+    task_text = color["tasks"][user["task_index"]] if user["task_index"] is not None else "Завдання ще не задано."
+    spoiler_text = f"Колір: {color['emoji']} {color['name']}\nЗавдання: {task_text}"
+    spoiler_html = f'<span class="tg-spoiler">{spoiler_text}</span>'
 
     text = (
         f"{color['emoji']} Твій колір на вечірку обрано!\n\n"
@@ -403,14 +405,14 @@ async def cb_choose_color(callback: CallbackQuery):
         "Твій колір і мінізавдання сховані під спойлером нижче. "
         "Натисни на затемнений текст, щоб відкрити його (інші побачать тільки якщо ти покажеш екран):\n\n"
         f"{spoiler_html}\n\n"
-        "У будь-який момент ти можеш подивитись це в меню: "
-        "«🎨 Мій колір» та «🧩 Моя роль і завдання».\n\n"
+        "Старайся не палити свій колір нікому — нехай усі здивуються, коли побачать твій образ 😉\n\n"
+        "У будь-який момент ти можеш подивитись це в меню «🎨 Моє меню».\n\n"
         "Далі я попрошу тебе додати страву і напій, а потім — залетіти в гру «Таємний Миколайчик» 🎅"
     )
 
     await callback.message.edit_text(text)
     await callback.message.answer(
-        "Ось твоє меню учасника 🎄",
+        "Ось твоє головне меню гостя 🎄",
         reply_markup=main_menu_kb(user),
     )
 
@@ -426,57 +428,16 @@ async def cb_choose_color(callback: CallbackQuery):
         )
 
 
-@router.message(F.text == "ℹ️ Про вечірку")
-async def about_party(message: Message):
-    text = (
-        f"🎄 <b>{PARTY_NAME}</b>\n"
-        f"📍 {PARTY_LOCATION}\n"
-        f"🗓 {PARTY_DATES_TEXT}\n\n"
-        f"{PARTY_RULES}"
-    )
-    await message.answer(text)
+# ===== однаковий текст для «Мій колір» і «Моя роль і завдання» =====
 
 
-@router.message(F.text == "🎨 Мій колір")
-async def my_color(message: Message):
-    user = get_user(message.from_user.id)
+def build_my_color_text(user: Dict[str, Any]) -> str:
     if not user.get("color_id"):
-        await message.answer("Ти ще не обрав свій колір. Натисни /start і пройди реєстрацію 🎨")
-        return
+        return "Ти ще не обрав свій колір. Натисни /start і пройди реєстрацію 🎨"
+
     color = get_color_by_id(user["color_id"])
     if not color:
-        await message.answer("Не можу знайти твій колір, напиши організатору.")
-        return
-
-    if user.get("task_index") is not None and color["tasks"]:
-        try:
-            task_text = color["tasks"][user["task_index"]]
-        except IndexError:
-            task_text = "Завдання ще не задано."
-    else:
-        task_text = "Завдання ще не задано."
-
-    spoiler_plain = f"Колір: {color['emoji']} {color['name']}\nЗавдання: {task_text}"
-    spoiler_html = f'<span class="tg-spoiler">{spoiler_plain}</span>'
-
-    text = (
-        f"Твоя роль: <b>{color['role']}</b>\n\n"
-        "Твій колір і мінізавдання сховані під спойлером нижче:\n\n"
-        f"{spoiler_html}"
-    )
-    await message.answer(text)
-
-
-@router.message(F.text == "🧩 Моя роль і завдання")
-async def my_role_task(message: Message):
-    user = get_user(message.from_user.id)
-    if not user.get("color_id"):
-        await message.answer("Спочатку обери колір, тоді я дам тобі роль і завдання 😉")
-        return
-    color = get_color_by_id(user["color_id"])
-    if not color:
-        await message.answer("Щось пішло не так з твоїм кольором. Напиши організатору.")
-        return
+        return "Не можу знайти твій колір, напиши організатору."
 
     if user.get("task_index") is not None and color["tasks"]:
         try:
@@ -492,17 +453,30 @@ async def my_role_task(message: Message):
     text = (
         f"Твоя роль: <b>{color['role']}</b>\n\n"
         "Твій колір і мінізавдання сховані під спойлером:\n\n"
-        f"{spoiler_html}"
+        f"{spoiler_html}\n\n"
+        "Памʼятай: не розголошуй свій колір іншим гостям — це частина магії вечірки 😉"
     )
-    await message.answer(text)
+    return text
 
 
-@router.message(F.text == "🍲 Моя страва і напій")
+@router.message(F.text == "🎨 Мій колір")
+async def my_color(message: Message):
+    user = get_user(message.from_user.id)
+    await message.answer(build_my_color_text(user))
+
+
+@router.message(F.text == "🧩 Моя роль і завдання")
+async def my_role_task(message: Message):
+    user = get_user(message.from_user.id)
+    await message.answer(build_my_color_text(user))
+
+
+@router.message(F.text == "🍽 Моя страва і напій")
 async def my_dish_drink(message: Message):
     user = get_user(message.from_user.id)
     text = (
         "Кожен гість приносить <b>страву</b> і <b>напій</b>.\n"
-        "Головне, щоб страва максимально співпадала до твого кольору образу.\n\n"
+        "Бажано, щоб страва максимально пасувала до твого кольору образу.\n\n"
         "Спочатку напиши, будь ласка, <b>що ти плануєш принести як страву</b> "
         "(десерт, салат, закуска тощо)."
     )
@@ -510,7 +484,7 @@ async def my_dish_drink(message: Message):
     PENDING_ACTION[message.from_user.id] = "set_dish"
 
 
-@router.message(F.text == "🎅 Мій Миколайчик")
+@router.message(F.text == "🎅 Таємний Миколайчик")
 async def my_santa(message: Message):
     user = get_user(message.from_user.id)
 
@@ -562,7 +536,53 @@ async def my_santa(message: Message):
     await message.answer("".join(parts), reply_markup=santa_chat_kb(user))
 
 
-@router.message(F.text == "💬 Чат вечірки")
+@router.message(F.text == "📜 Гості та меню")
+async def guests_menu_for_user(message: Message):
+    lines = ["📜 <b>Гості та меню</b>\n"]
+    has_any = False
+
+    for uid, data in USERS.items():
+        if not data.get("participant"):
+            continue
+        has_any = True
+
+        name = data.get("name") or f"Гість {uid}"
+        role_txt = "-"
+        if data.get("color_id"):
+            c = get_color_by_id(data["color_id"])
+            if c:
+                role_txt = c["role"]
+
+        dish_txt = data.get("dish") or "—"
+        drink_txt = data.get("drink") or "—"
+
+        lines.append(
+            f"<b>{name}</b>\n"
+            f"   • Роль: {role_txt}\n"
+            f"   • Страва: {dish_txt}\n"
+            f"   • Напій: {drink_txt}\n"
+        )
+
+    if not has_any:
+        lines.append("Поки ще ніхто не додав свої дані 🤔")
+
+    await message.answer("\n".join(lines))
+
+
+@router.message(F.text == "ℹ️ Про вечірку")
+async def about_party(message: Message):
+    desc_part = f"\n\n{PARTY_DESCRIPTION}" if PARTY_DESCRIPTION else ""
+    text = (
+        f"🎄 <b>{PARTY_NAME}</b>\n"
+        f"📍 {PARTY_LOCATION}\n"
+        f"🗓 {PARTY_DATES_TEXT}"
+        f"{desc_part}\n\n"
+        f"{PARTY_RULES}"
+    )
+    await message.answer(text)
+
+
+@router.message(F.text == "💬 Чат")
 async def party_chat(message: Message):
     if PARTY_CHAT_LINK:
         await message.answer(
@@ -573,7 +593,29 @@ async def party_chat(message: Message):
         await message.answer("Організатор ще не додав посилання на чат вечірки 🤔")
 
 
-@router.message(F.text == "⭐ Фідбек / питання")
+@router.message(F.text == "📢 Канал")
+async def party_channel(message: Message):
+    if PARTY_CHANNEL_LINK:
+        await message.answer(
+            "Ось наш канал вечірки. Там будуть оголошення, листівки і вся магія свята 📢\n"
+            f"{PARTY_CHANNEL_LINK}"
+        )
+    else:
+        await message.answer("Організатор ще не додав посилання на канал вечірки 🤔")
+
+
+@router.message(F.text == "🎨 Моє меню")
+async def my_menu(message: Message):
+    await message.answer("Ось твоє особисте меню гостя:", reply_markup=my_menu_kb())
+
+
+@router.message(F.text == "↩️ Назад")
+async def back_to_main_menu(message: Message):
+    user = get_user(message.from_user.id)
+    await message.answer("Повертаю в головне меню 🎄", reply_markup=main_menu_kb(user))
+
+
+@router.message(F.text == "⭐ Звʼязатись з Сантою")
 async def feedback_menu(message: Message):
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -582,7 +624,7 @@ async def feedback_menu(message: Message):
         ]
     )
     await message.answer(
-        "Тут ти можеш залишити загальний фідбек або поставити питання про гру «Таємний Миколайчик».",
+        "Тут ти можеш залишити фідбек про вечірку або поставити питання про гру «Таємний Миколайчик».",
         reply_markup=kb,
     )
 
@@ -630,15 +672,6 @@ async def cb_santa_leave(callback: CallbackQuery):
             "drink": None,
         }
     )
-
-    # спробуємо кікнути з групового чату, якщо вказаний PARTY_CHAT_ID і бот має права
-    if PARTY_CHAT_ID:
-        try:
-            await callback.message.bot.ban_chat_member(PARTY_CHAT_ID, user_id)
-            await callback.message.bot.unban_chat_member(PARTY_CHAT_ID, user_id)
-        except Exception:
-            # якщо нема прав / не в чаті — просто мовчки ігноруємо
-            pass
 
     await callback.message.edit_text(
         "Я виключив тебе з гри «Таємний Миколайчик» і з вечірки. "
@@ -709,13 +742,23 @@ async def cmd_admin(message: Message):
     await message.answer("Привіт, організаторе 🎄 Що робимо?", reply_markup=admin_menu_kb())
 
 
+@router.callback_query(F.data == "admin_create_party")
+async def admin_create_party(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Це тільки для адміна 🙃", show_alert=True)
+        return
+    PARTY_DRAFT.clear()
+    PENDING_ACTION[callback.from_user.id] = "admin_create_party_name"
+    await callback.message.answer("Введи назву вечірки (наприклад: «Різдвяний Спектр»).")
+
+
 @router.callback_query(F.data == "admin_guests")
 async def admin_guests(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Це тільки для адміна 🙃", show_alert=True)
         return
 
-    lines = ["👥 <b>Гості вечірки</b>"]
+    lines = ["👥 <b>Гості вечірки</b>\n"]
     has_any = False
 
     for uid, data in USERS.items():
@@ -737,8 +780,12 @@ async def admin_guests(callback: CallbackQuery):
         gift_txt = "🎁" if data.get("santa_gift_ready") else "—"
 
         lines.append(
-            f"• <b>{name}</b> | Колір: {color_txt} | Роль: {role_txt} | "
-            f"Страва: {dish_txt} | Напій: {drink_txt} | Santa: {santa_txt} | Подарунок: {gift_txt}"
+            f"<b>{name}</b>\n"
+            f"   • Колір: {color_txt}\n"
+            f"   • Роль: {role_txt}\n"
+            f"   • Страва: {dish_txt}\n"
+            f"   • Напій: {drink_txt}\n"
+            f"   • Santa: {santa_txt} | Подарунок: {gift_txt}\n"
         )
 
         task_text = ""
@@ -752,7 +799,7 @@ async def admin_guests(callback: CallbackQuery):
                     task_text = ""
 
         if task_text:
-            lines.append(f"  Завдання: {task_text}")
+            lines.append(f"   • Завдання: {task_text}\n")
 
     if not has_any:
         lines.append("Поки нікого немає.")
@@ -893,7 +940,7 @@ async def admin_notify_pairs(callback: CallbackQuery):
 
         parts.append(
             "\n\nНе пались завчасно 😉 "
-            "Можеш написати йому/їй через меню «🎅 Мій Миколайчик»."
+            "Можеш написати йому/їй через меню «🎅 Таємний Миколайчик»."
         )
         text = "".join(parts)
         try:
@@ -962,7 +1009,7 @@ async def admin_card_cancel(callback: CallbackQuery):
     await callback.message.edit_text("Скасовано відправку листівки.")
 
 
-# ================== УНІВЕРСАЛЬНИЙ ХЕНДЛЕР ==================
+# ================== УНІВЕРСАЛЬНИЙ ХЕНДЛЕР (pending actions) ==================
 
 
 @router.message()
@@ -1027,12 +1074,12 @@ async def universal_handler(message: Message):
         if not target_id:
             await message.answer("Схоже, у тебе вже немає підопічного 🤔")
             return
-        text = (
+        text_msg = (
             "✉ Тобі повідомлення від твого Таємного Миколайчика:\n\n"
             f"{message.text}"
         )
         try:
-            await bot.send_message(target_id, text)
+            await bot.send_message(target_id, text_msg)
             await message.answer("Я передав твоє повідомлення твоєму підопічному ✉")
         except Exception:
             await message.answer("Не зміг доставити повідомлення підопічному 😔")
@@ -1043,21 +1090,21 @@ async def universal_handler(message: Message):
         if not target_id:
             await message.answer("Схоже, у тебе немає Миколайчика 🤔")
             return
-        text = (
+        text_msg = (
             "✉ Тобі повідомлення від твого підопічного у грі «Таємний Миколайчик»:\n\n"
             f"{message.text}"
         )
         try:
-            await bot.send_message(target_id, text)
+            await bot.send_message(target_id, text_msg)
             await message.answer("Я передав твоє повідомлення твоєму Миколайчику ✉")
         except Exception:
             await message.answer("Не зміг доставити повідомлення Миколайчику 😔")
         return
 
-    # --- Question to admin about Santa ---
+    # --- Питання до адміна про Миколайчика ---
     if action == "ask_santa_admin":
-        text = message.text.strip()
-        lower = text.lower()
+        text_msg = message.text.strip()
+        lower = text_msg.lower()
         anonymous = "анонім" in lower
 
         if anonymous:
@@ -1071,17 +1118,17 @@ async def universal_handler(message: Message):
         try:
             await bot.send_message(
                 ADMIN_ID,
-                header + text,
+                header + text_msg,
             )
             await message.answer("Я передав твоє питання організатору 🎅")
         except Exception:
             await message.answer("Не зміг передати питання організатору 😔")
         return
 
-    # --- General feedback ---
+    # --- Загальний фідбек ---
     if action == "fb_general":
-        text = message.text.strip()
-        lower = text.lower()
+        text_msg = message.text.strip()
+        lower = text_msg.lower()
         anonymous = "анонім" in lower
 
         if anonymous:
@@ -1095,14 +1142,14 @@ async def universal_handler(message: Message):
         try:
             await bot.send_message(
                 ADMIN_ID,
-                header + text,
+                header + text_msg,
             )
             await message.answer("Дякую за фідбек! Я передав його організатору 🫶")
         except Exception:
             await message.answer("Не зміг передати фідбек організатору 😔")
         return
 
-    # --- Admin: set budget ---
+    # --- Admin: budget ---
     if action == "admin_set_budget":
         if user_id != ADMIN_ID:
             await message.answer("Це тільки для адміна 🙃")
@@ -1111,7 +1158,7 @@ async def universal_handler(message: Message):
         await message.answer(f"Оновив бюджет для Миколайчика: {SANTA.budget_text}")
         return
 
-    # --- Admin: set santa description ---
+    # --- Admin: santa description ---
     if action == "admin_set_santa_desc":
         if user_id != ADMIN_ID:
             await message.answer("Це тільки для адміна 🙃")
@@ -1120,25 +1167,25 @@ async def universal_handler(message: Message):
         await message.answer("Зберіг опис гри Таємного Миколайчика.")
         return
 
-    # --- Admin: broadcast to all participants ---
+    # --- Admin: broadcast ---
     if action == "admin_broadcast":
         if user_id != ADMIN_ID:
             await message.answer("Це тільки для адміна 🙃")
             return
-        text = message.text
+        text_msg = message.text
         sent = 0
         for uid, data in USERS.items():
             if not data.get("participant"):
                 continue
             try:
-                await bot.send_message(uid, text)
+                await bot.send_message(uid, text_msg)
                 sent += 1
             except Exception:
                 pass
         await message.answer(f"Розіслав оголошення {sent} учасникам 🎄")
         return
 
-    # --- Admin: card to channel ---
+    # --- Admin: card to channel (збереження тексту) ---
     if action == "admin_card":
         if user_id != ADMIN_ID:
             await message.answer("Це тільки для адміна 🙃")
@@ -1158,6 +1205,116 @@ async def universal_handler(message: Message):
         await message.answer(preview, reply_markup=kb)
         return
 
+    # --- Admin: створення вечірки — кроки ---
+    if action == "admin_create_party_name":
+        if user_id != ADMIN_ID:
+            await message.answer("Це тільки для адміна 🙃")
+            return
+        PARTY_DRAFT["name"] = message.text.strip()
+        await message.answer("Тепер введи дати вечірки (наприклад: 24–25 грудня 2025 року).")
+        PENDING_ACTION[user_id] = "admin_create_party_dates"
+        return
+
+    if action == "admin_create_party_dates":
+        if user_id != ADMIN_ID:
+            await message.answer("Це тільки для адміна 🙃")
+            return
+        PARTY_DRAFT["dates"] = message.text.strip()
+        await message.answer("Введи місце проведення (наприклад: селище Бабинці).")
+        PENDING_ACTION[user_id] = "admin_create_party_location"
+        return
+
+    if action == "admin_create_party_location":
+        if user_id != ADMIN_ID:
+            await message.answer("Це тільки для адміна 🙃")
+            return
+        PARTY_DRAFT["location"] = message.text.strip()
+        await message.answer("Напиши короткий опис вечірки (можна пропустити, відправивши «-»).")
+        PENDING_ACTION[user_id] = "admin_create_party_desc"
+        return
+
+    if action == "admin_create_party_desc":
+        if user_id != ADMIN_ID:
+            await message.answer("Це тільки для адміна 🙃")
+            return
+        desc = message.text.strip()
+        PARTY_DRAFT["description"] = None if desc == "-" else desc
+        await message.answer(
+            "Тепер введи список запрошених гостей через пробіл.\n"
+            "Наприклад: @rezka_tvp @user2 @user3"
+        )
+        PENDING_ACTION[user_id] = "admin_create_party_guests"
+        return
+
+    if action == "admin_create_party_guests":
+        if user_id != ADMIN_ID:
+            await message.answer("Це тільки для адміна 🙃")
+            return
+
+        raw = message.text.replace(",", " ")
+        tokens = raw.split()
+        usernames: set[str] = set()
+        ids: set[int] = set()
+
+        for t in tokens:
+            t = t.strip()
+            if not t:
+                continue
+            if t.startswith("@"):
+                usernames.add(t.lower())
+            elif t.isdigit():
+                ids.add(int(t))
+            else:
+                usernames.add(t.lower())
+
+        ALLOWED_USERNAMES.clear()
+        ALLOWED_USERNAMES.update(usernames)
+        ALLOWED_IDS.clear()
+        ALLOWED_IDS.update(ids)
+
+        global PARTY_NAME, PARTY_DATES_TEXT, PARTY_LOCATION, PARTY_DESCRIPTION
+        PARTY_NAME = PARTY_DRAFT.get("name", PARTY_NAME)
+        PARTY_DATES_TEXT = PARTY_DRAFT.get("dates", PARTY_DATES_TEXT)
+        PARTY_LOCATION = PARTY_DRAFT.get("location", PARTY_LOCATION)
+        PARTY_DESCRIPTION = PARTY_DRAFT.get("description", PARTY_DESCRIPTION)
+
+        invited_list_str = ", ".join(sorted(usernames)) if usernames else "немає нікого"
+        await message.answer(
+            "Вечірку оновлено ✅\n\n"
+            f"Назва: {PARTY_NAME}\n"
+            f"Дати: {PARTY_DATES_TEXT}\n"
+            f"Місце: {PARTY_LOCATION}\n"
+            f"Опис: {PARTY_DESCRIPTION or '—'}\n\n"
+            f"Запрошені (по username): {invited_list_str}\n\n"
+            "Я зможу написати тільки тим, хто вже колись запускав мене.\n"
+            "Іншим просто надішли лінк на бота."
+        )
+
+        invite_text = (
+            f"Тебе запросили на вечірку «{PARTY_NAME}»! 🎄\n\n"
+            "Щоб розпочати підготовку, натисни /start у цьому чаті."
+        )
+
+        sent = 0
+        for uid, data in USERS.items():
+            uname = data.get("username")
+            if not uname:
+                continue
+            uname_low = uname.lower()
+            if uname_low in usernames or f"@{uname_low}" in usernames:
+                try:
+                    await bot.send_message(uid, invite_text)
+                    sent += 1
+                except Exception:
+                    pass
+
+        if sent:
+            await message.answer(f"Надіслав інвайт {sent} гостям, які вже писали боту раніше.")
+
+        PARTY_DRAFT.clear()
+        return
+
+    # fallback
     await message.answer(
         "Я тебе почув 👀 Користуйся кнопками нижче:",
         reply_markup=main_menu_kb(user),
