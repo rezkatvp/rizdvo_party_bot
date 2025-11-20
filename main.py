@@ -401,11 +401,12 @@ async def cb_choose_color(callback: CallbackQuery):
         "Далі я попрошу тебе додати страву і напій, а потім — залетіти в гру «Таємний Миколайчик» 🎅"
     )
 
-    await callback.message.edit_text(text)
-    await callback.message.answer(
-        "Ось твоє меню учасника 🎄",
-        reply_markup=main_menu_kb(user),
-    )
+await callback.message.edit_text(text)
+await callback.message.answer(
+    "Ось твоє меню учасника 🎄",
+    reply_markup=main_menu_kb(user),
+)
+
     extra_parts = []
     if PARTY_CHANNEL_LINK:
         extra_parts.append(f"📢 Наш канал вечірки: {PARTY_CHANNEL_LINK}")
