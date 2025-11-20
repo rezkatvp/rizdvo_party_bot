@@ -406,8 +406,7 @@ await callback.message.answer(
     "Ось твоє меню учасника 🎄",
     reply_markup=main_menu_kb(user),
 )
-
-    extra_parts = []
+        extra_parts = []
     if PARTY_CHANNEL_LINK:
         extra_parts.append(f"📢 Наш канал вечірки: {PARTY_CHANNEL_LINK}")
     if PARTY_CHAT_LINK:
