@@ -5,6 +5,7 @@ from typing import Dict, Optional, Any
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import CommandStart, Command
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -1092,7 +1093,10 @@ async def universal_handler(message: Message):
 
 
 async def main():
-    bot = Bot(BOT_TOKEN, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
     dp.include_router(router)
     print("Bot is starting...")
