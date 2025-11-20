@@ -406,7 +406,7 @@ async def cb_choose_color(callback: CallbackQuery):
         "Ось твоє меню учасника 🎄",
         reply_markup=main_menu_kb(user),
     )
-        extra_parts = []
+    extra_parts = []
     if PARTY_CHANNEL_LINK:
         extra_parts.append(f"📢 Наш канал вечірки: {PARTY_CHANNEL_LINK}")
     if PARTY_CHAT_LINK:
@@ -414,7 +414,7 @@ async def cb_choose_color(callback: CallbackQuery):
 
     if extra_parts:
         await callback.message.answer(
-            "Щоб нічого не пропустити, долучайся сюди:\\n" + "\\n".join(extra_parts)
+            "Щоб нічого не пропустити, долучайся сюди:\n" + "\n".join(extra_parts)
         )
 
 @router.message(F.text == "ℹ️ Про вечірку")
