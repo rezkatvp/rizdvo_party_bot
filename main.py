@@ -14,7 +14,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-    from aiogram.enums import ParseMode
+from aiogram.enums import ParseMode
 
 # ================== ENV CONFIG ==================
 
