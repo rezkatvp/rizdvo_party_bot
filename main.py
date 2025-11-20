@@ -23,9 +23,11 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 # лінк на чат (url типу https://t.me/...)
 PARTY_CHAT_LINK = os.getenv("PARTY_CHAT_LINK")
-
 # id або username каналу (наприклад '@christmas_spectrum' або -1001234567890)
 PARTY_CHANNEL_ID = os.getenv("PARTY_CHANNEL_ID")
+# лінк на канал (https://t.me/...)
+PARTY_CHANNEL_LINK = os.getenv("PARTY_CHANNEL_LINK")
+
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не заданий в змінних середовища")
@@ -355,6 +357,7 @@ async def cb_party_no(callback: CallbackQuery):
     )
 
 
+
 @router.callback_query(F.data.startswith("color:"))
 async def cb_choose_color(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
@@ -381,15 +384,15 @@ async def cb_choose_color(callback: CallbackQuery):
     color["taken_by"] = callback.from_user.id
     user["color_id"] = color_id
 
+    # вибираємо випадкове завдання для цього користувача
     if color["tasks"]:
         user["task_index"] = random.randint(0, len(color["tasks"]) - 1)
     else:
         user["task_index"] = None
 
-    task_text = color["tasks"][user["task_index"]] if user["task_index"] is not None else "Завдання ще не задано."
-    
-    spoiler_plain = f"Колір: {color['emoji']} {color['name']}\nЗавдання: {task_text}"
-    spoiler_html = f'<span class="tg-spoiler">{spoiler_plain}</span>'
+    spoof_task = color["tasks"][user["task_index"]] if user["task_index"] is not None else "Завдання ще не задано."
+    spoiler_text = f"Колір: {color['emoji']} {color['name']}\nЗавдання: {spoof_task}"
+    spoiler_html = f"<span class=\"tg-spoiler\">{spoiler_text}</span>"
 
     text = (
         f"{color['emoji']} Твій колір на вечірку обрано!\n\n"
@@ -402,15 +405,12 @@ async def cb_choose_color(callback: CallbackQuery):
         "Далі я попрошу тебе додати страву і напій, а потім — залетіти в гру «Таємний Миколайчик» 🎅"
     )
 
-    # === Початок виправленого блоку ===
-    await callback.message.edit_text(text, parse_mode="HTML")
-
+    await callback.message.edit_text(text)
     await callback.message.answer(
         "Ось твоє меню учасника 🎄",
         reply_markup=main_menu_kb(user),
     )
 
-    # Додаткові посилання (канал і чат)
     extra_parts = []
     if PARTY_CHANNEL_LINK:
         extra_parts.append(f"📢 Наш канал вечірки: {PARTY_CHANNEL_LINK}")
@@ -421,7 +421,6 @@ async def cb_choose_color(callback: CallbackQuery):
         await callback.message.answer(
             "Щоб нічого не пропустити, долучайся сюди:\n" + "\n".join(extra_parts)
         )
-    # === Кінець виправленого блоку ===
 
 @router.message(F.text == "ℹ️ Про вечірку")
 async def about_party(message: Message):
@@ -964,6 +963,8 @@ async def admin_card_cancel(callback: CallbackQuery):
 
 
 @router.message()
+
+@router.message()
 async def universal_handler(message: Message):
     user_id = message.from_user.id
     user = get_user(user_id)
@@ -971,6 +972,7 @@ async def universal_handler(message: Message):
 
     action = PENDING_ACTION.pop(user_id, None)
 
+    # Якщо нема pending-дії — просто показуємо меню
     if not action:
         await message.answer(
             "Я тебе почув 👀 Користуйся кнопками нижче:",
@@ -1053,17 +1055,17 @@ async def universal_handler(message: Message):
         return
 
     # --- Question to admin about Santa ---
-        if action == "ask_santa_admin":
+    if action == "ask_santa_admin":
         text = message.text.strip()
         lower = text.lower()
         anonymous = "анонім" in lower
 
         if anonymous:
-            header = "❓ Анонімне питання про Миколайчика:\\n\\n"
+            header = "❓ Анонімне питання про Миколайчика:\n\n"
         else:
             header = (
                 f"❓ Питання про Миколайчика від {user.get('name') or user_id} "
-                f"(@{user.get('username') or '-'}):\\n\\n"
+                f"(@{user.get('username') or '-'}):\n\n"
             )
 
         try:
@@ -1077,17 +1079,17 @@ async def universal_handler(message: Message):
         return
 
     # --- General feedback ---
-        if action == "fb_general":
+    if action == "fb_general":
         text = message.text.strip()
         lower = text.lower()
         anonymous = "анонім" in lower
 
         if anonymous:
-            header = "⭐ Анонімний фідбек:\\n\\n"
+            header = "⭐ Анонімний фідбек:\n\n"
         else:
             header = (
                 f"⭐ Фідбек від {user.get('name') or user_id} "
-                f"(@{user.get('username') or '-'}):\\n\\n"
+                f"(@{user.get('username') or '-'}):\n\n"
             )
 
         try:
@@ -1141,12 +1143,14 @@ async def universal_handler(message: Message):
         if user_id != ADMIN_ID:
             await message.answer("Це тільки для адміна 🙃")
             return
-        PENDING_CONTEXT[user_id] = message.text
+        # превʼю + кнопка відправки в канал
         preview = (
             "Ось превʼю листівки, яку можна відправити в канал:\n\n"
             f"{message.text}\n\n"
             "Натисни кнопку нижче, щоб опублікувати в канал."
         )
+        # зберігаємо текст у контексті
+        PENDING_CONTEXT[user_id] = message.text
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="✅ Опублікувати в канал", callback_data="admin_card_publish")],
@@ -1161,11 +1165,6 @@ async def universal_handler(message: Message):
         "Я тебе почув 👀 Користуйся кнопками нижче:",
         reply_markup=main_menu_kb(user),
     )
-
-
-# ================== ЗАПУСК БОТА ==================
-
-
 async def main():
     bot = Bot(
         BOT_TOKEN,
