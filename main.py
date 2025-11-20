@@ -387,6 +387,7 @@ async def cb_choose_color(callback: CallbackQuery):
         user["task_index"] = None
 
     task_text = color["tasks"][user["task_index"]] if user["task_index"] is not None else "Завдання ще не задано."
+    
     spoiler_plain = f"Колір: {color['emoji']} {color['name']}\nЗавдання: {task_text}"
     spoiler_html = f'<span class="tg-spoiler">{spoiler_plain}</span>'
 
@@ -401,12 +402,16 @@ async def cb_choose_color(callback: CallbackQuery):
         "Далі я попрошу тебе додати страву і напій, а потім — залетіти в гру «Таємний Миколайчик» 🎅"
     )
 
-await callback.message.edit_text(text)
-await callback.message.answer(
-    "Ось твоє меню учасника 🎄",
-    reply_markup=main_menu_kb(user),
-)
-        extra_parts = []
+    # === Початок виправленого блоку ===
+    await callback.message.edit_text(text, parse_mode="HTML")
+
+    await callback.message.answer(
+        "Ось твоє меню учасника 🎄",
+        reply_markup=main_menu_kb(user),
+    )
+
+    # Додаткові посилання (канал і чат)
+    extra_parts = []
     if PARTY_CHANNEL_LINK:
         extra_parts.append(f"📢 Наш канал вечірки: {PARTY_CHANNEL_LINK}")
     if PARTY_CHAT_LINK:
@@ -416,6 +421,7 @@ await callback.message.answer(
         await callback.message.answer(
             "Щоб нічого не пропустити, долучайся сюди:\n" + "\n".join(extra_parts)
         )
+    # === Кінець виправленого блоку ===
 
 @router.message(F.text == "ℹ️ Про вечірку")
 async def about_party(message: Message):
