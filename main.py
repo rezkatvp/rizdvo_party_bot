@@ -27,7 +27,8 @@ PARTY_CHAT_LINK = os.getenv("PARTY_CHAT_LINK")
 PARTY_CHANNEL_ID = os.getenv("PARTY_CHANNEL_ID")
 # лінк на канал (https://t.me/...)
 PARTY_CHANNEL_LINK = os.getenv("PARTY_CHANNEL_LINK")
-
+# id групового чату (для кіка при виході з вечірки), опціонально
+PARTY_CHAT_ID = int(os.getenv("PARTY_CHAT_ID", "0") or "0")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не заданий в змінних середовища")
@@ -208,7 +209,7 @@ def main_menu_kb(user: Dict[str, Any]) -> ReplyKeyboardMarkup:
     if user.get("participant"):
         buttons.append([KeyboardButton(text="🎅 Мій Миколайчик")])
         buttons.append([KeyboardButton(text="📜 Гості та меню")])
-        
+
     buttons.append([KeyboardButton(text="💬 Чат вечірки")])
     buttons.append([KeyboardButton(text="⭐ Фідбек / питання")])
 
@@ -224,7 +225,7 @@ def colors_inline_kb() -> InlineKeyboardMarkup:
     rows = []
     row = []
     for c in available:
-        text = f"{c['emoji']} {c['name']}"
+        text = c["emoji"]  # тільки емодзі, щоб влізло більше
         row.append(InlineKeyboardButton(text=text, callback_data=f"color:{c['id']}"))
         if len(row) == 2:
             rows.append(row)
@@ -291,9 +292,9 @@ async def cmd_start(message: Message):
     user["username"] = message.from_user.username
 
     text = (
-        f"Вау, ну що ж я вітаю тебе на вечірці <b>«{PARTY_NAME}»</b>!\\n\\n"
+        f"Вау, ну що ж я вітаю тебе на вечірці <b>«{PARTY_NAME}»</b>!\n\n"
         "Я внесу тебе до списку гостей, підкажу, як підготуватися до свята "
-        "і нагадаю про всі важливі дрібниці.\\n\\n"
+        "і нагадаю про всі важливі дрібниці.\n\n"
         "Скажи, ти будеш на вечірці?"
     )
 
@@ -305,6 +306,7 @@ async def cmd_start(message: Message):
     )
 
     await message.answer(text, reply_markup=kb)
+
 
 @router.message(F.text == "📜 Гості та меню")
 async def guests_menu_for_user(message: Message):
@@ -326,7 +328,6 @@ async def guests_menu_for_user(message: Message):
         dish_txt = data.get("dish") or "—"
         drink_txt = data.get("drink") or "—"
 
-        # Без кольорів, тільки роль, страва, напій
         lines.append(
             f"• <b>{name}</b> | Роль: {role_txt} | Страва: {dish_txt} | Напій: {drink_txt}"
         )
@@ -334,7 +335,8 @@ async def guests_menu_for_user(message: Message):
     if not has_any:
         lines.append("Поки ще ніхто не додав свої дані 🤔")
 
-    await message.answer("\\n".join(lines))
+    await message.answer("\n".join(lines))
+
 
 @router.callback_query(F.data == "party_yes")
 async def cb_party_yes(callback: CallbackQuery):
@@ -355,7 +357,6 @@ async def cb_party_no(callback: CallbackQuery):
         "Окей, можеш просто підглядати за підготовкою 😉\n"
         "Якщо передумаєш — напиши /start."
     )
-
 
 
 @router.callback_query(F.data.startswith("color:"))
@@ -390,7 +391,9 @@ async def cb_choose_color(callback: CallbackQuery):
     else:
         user["task_index"] = None
 
-    spoof_task = color["tasks"][user["task_index"]] if user["task_index"] is not None else "Завдання ще не задано."
+    spoof_task = (
+        color["tasks"][user["task_index"]] if user["task_index"] is not None else "Завдання ще не задано."
+    )
     spoiler_text = f"Колір: {color['emoji']} {color['name']}\nЗавдання: {spoof_task}"
     spoiler_html = f"<span class=\"tg-spoiler\">{spoiler_text}</span>"
 
@@ -421,6 +424,7 @@ async def cb_choose_color(callback: CallbackQuery):
         await callback.message.answer(
             "Щоб нічого не пропустити, долучайся сюди:\n" + "\n".join(extra_parts)
         )
+
 
 @router.message(F.text == "ℹ️ Про вечірку")
 async def about_party(message: Message):
@@ -627,7 +631,7 @@ async def cb_santa_leave(callback: CallbackQuery):
         }
     )
 
-        # спробуємо кікнути з групового чату, якщо вказаний PARTY_CHAT_ID і бот має права
+    # спробуємо кікнути з групового чату, якщо вказаний PARTY_CHAT_ID і бот має права
     if PARTY_CHAT_ID:
         try:
             await callback.message.bot.ban_chat_member(PARTY_CHAT_ID, user_id)
@@ -801,7 +805,6 @@ async def admin_toggle_santa_reg(callback: CallbackQuery):
         await callback.answer("Це тільки для адміна 🙃", show_alert=True)
         return
 
-    # якщо реєстрація ще закрита і ми хочемо її відкрити — перевіряємо бюджет
     if not SANTA.registration_open and not SANTA.budget_text:
         await callback.answer("Спочатку задай бюджет для гри 💰", show_alert=True)
         return
@@ -963,8 +966,6 @@ async def admin_card_cancel(callback: CallbackQuery):
 
 
 @router.message()
-
-@router.message()
 async def universal_handler(message: Message):
     user_id = message.from_user.id
     user = get_user(user_id)
@@ -972,7 +973,6 @@ async def universal_handler(message: Message):
 
     action = PENDING_ACTION.pop(user_id, None)
 
-    # Якщо нема pending-дії — просто показуємо меню
     if not action:
         await message.answer(
             "Я тебе почув 👀 Користуйся кнопками нижче:",
@@ -1143,13 +1143,11 @@ async def universal_handler(message: Message):
         if user_id != ADMIN_ID:
             await message.answer("Це тільки для адміна 🙃")
             return
-        # превʼю + кнопка відправки в канал
         preview = (
             "Ось превʼю листівки, яку можна відправити в канал:\n\n"
             f"{message.text}\n\n"
             "Натисни кнопку нижче, щоб опублікувати в канал."
         )
-        # зберігаємо текст у контексті
         PENDING_CONTEXT[user_id] = message.text
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1160,15 +1158,16 @@ async def universal_handler(message: Message):
         await message.answer(preview, reply_markup=kb)
         return
 
-    # fallback
     await message.answer(
         "Я тебе почув 👀 Користуйся кнопками нижче:",
         reply_markup=main_menu_kb(user),
     )
+
+
 async def main():
     bot = Bot(
         BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
     dp.include_router(router)
