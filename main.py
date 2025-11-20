@@ -337,7 +337,7 @@ def colors_inline_kb() -> InlineKeyboardMarkup:
     for c in available:
         text = f"{c['emoji']} {c['role']}"
         row.append(InlineKeyboardButton(text=text, callback_data=f"color:{c['id']}"))
-        if len(row) == 8:
+        if len(row) == 2:
             rows.append(row)
             row = []
     if row:
