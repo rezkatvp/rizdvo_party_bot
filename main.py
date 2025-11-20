@@ -233,7 +233,7 @@ COLORS = [
     },
     {
         "id": 12,
-        "emoji": "🩵 - Крижана Принцеса",
+        "emoji": "🩵",
         "name": "Мʼятний / ніжно-бірюзовий",
         "role": "Крижана Принцеса",
         "tasks": [
@@ -335,7 +335,7 @@ def colors_inline_kb() -> InlineKeyboardMarkup:
     rows = []
     row = []
     for c in available:
-        text = c["emoji"]  # тільки емодзі, без підпису
+        text = f"{c['emoji']} {c['role']}"
         row.append(InlineKeyboardButton(text=text, callback_data=f"color:{c['id']}"))
         if len(row) == 4:
             rows.append(row)
