@@ -205,7 +205,8 @@ def main_menu_kb(user: Dict[str, Any]) -> ReplyKeyboardMarkup:
 
     if user.get("participant"):
         buttons.append([KeyboardButton(text="🎅 Мій Миколайчик")])
-
+        buttons.append([KeyboardButton(text="📜 Гості та меню")])
+        
     buttons.append([KeyboardButton(text="💬 Чат вечірки")])
     buttons.append([KeyboardButton(text="⭐ Фідбек / питання")])
 
@@ -288,16 +289,10 @@ async def cmd_start(message: Message):
     user["username"] = message.from_user.username
 
     text = (
-        f"🎄 Привіт, я бот вечірки <b>«{PARTY_NAME}»</b>!\n\n"
-        f"📍 Місце: {PARTY_LOCATION}\n"
-        f"🗓 Дати: {PARTY_DATES_TEXT}\n\n"
-        "Я допоможу тобі:\n"
-        "• зареєструватися на вечірку,\n"
-        "• обрати свій 🎨 колір-образ,\n"
-        "• отримати роль і таємне завдання,\n"
-        "• залетіти в гру 🎅 «Таємний Миколайчик»,\n"
-        "• додати свою страву і напій.\n\n"
-        "Ти будеш на вечірці?"
+        f"Вау, ну що ж я вітаю тебе на вечірці <b>«{PARTY_NAME}»</b>!\\n\\n"
+        "Я внесу тебе до списку гостей, підкажу, як підготуватися до свята "
+        "і нагадаю про всі важливі дрібниці.\\n\\n"
+        "Скажи, ти будеш на вечірці?"
     )
 
     kb = InlineKeyboardMarkup(
@@ -309,6 +304,35 @@ async def cmd_start(message: Message):
 
     await message.answer(text, reply_markup=kb)
 
+@router.message(F.text == "📜 Гості та меню")
+async def guests_menu_for_user(message: Message):
+    lines = ["📜 <b>Гості та меню</b>"]
+    has_any = False
+
+    for uid, data in USERS.items():
+        if not data.get("participant"):
+            continue
+        has_any = True
+
+        name = data.get("name") or f"Гість {uid}"
+        role_txt = "-"
+        if data.get("color_id"):
+            c = get_color_by_id(data["color_id"])
+            if c:
+                role_txt = c["role"]
+
+        dish_txt = data.get("dish") or "—"
+        drink_txt = data.get("drink") or "—"
+
+        # Без кольорів, тільки роль, страва, напій
+        lines.append(
+            f"• <b>{name}</b> | Роль: {role_txt} | Страва: {dish_txt} | Напій: {drink_txt}"
+        )
+
+    if not has_any:
+        lines.append("Поки ще ніхто не додав свої дані 🤔")
+
+    await message.answer("\\n".join(lines))
 
 @router.callback_query(F.data == "party_yes")
 async def cb_party_yes(callback: CallbackQuery):
@@ -382,7 +406,16 @@ async def cb_choose_color(callback: CallbackQuery):
         "Ось твоє меню учасника 🎄",
         reply_markup=main_menu_kb(user),
     )
+        extra_parts = []
+    if PARTY_CHANNEL_LINK:
+        extra_parts.append(f"📢 Наш канал вечірки: {PARTY_CHANNEL_LINK}")
+    if PARTY_CHAT_LINK:
+        extra_parts.append(f"💬 Чат гостей: {PARTY_CHAT_LINK}")
 
+    if extra_parts:
+        await callback.message.answer(
+            "Щоб нічого не пропустити, долучайся сюди:\\n" + "\\n".join(extra_parts)
+        )
 
 @router.message(F.text == "ℹ️ Про вечірку")
 async def about_party(message: Message):
@@ -460,7 +493,7 @@ async def my_dish_drink(message: Message):
     user = get_user(message.from_user.id)
     text = (
         "Кожен гість приносить <b>страву</b> і <b>напій</b>.\n"
-        "Бажано, щоб страва максимально пасувала до твого кольору образу.\n\n"
+        "Головне, щоб страва максимально співпадала до твого кольору образу.\n\n"
         "Спочатку напиши, будь ласка, <b>що ти плануєш принести як страву</b> "
         "(десерт, салат, закуска тощо)."
     )
@@ -588,6 +621,15 @@ async def cb_santa_leave(callback: CallbackQuery):
             "drink": None,
         }
     )
+
+        # спробуємо кікнути з групового чату, якщо вказаний PARTY_CHAT_ID і бот має права
+    if PARTY_CHAT_ID:
+        try:
+            await callback.message.bot.ban_chat_member(PARTY_CHAT_ID, user_id)
+            await callback.message.bot.unban_chat_member(PARTY_CHAT_ID, user_id)
+        except Exception:
+            # якщо нема прав / не в чаті — просто мовчки ігноруємо
+            pass
 
     await callback.message.edit_text(
         "Я виключив тебе з гри «Таємний Миколайчик» і з вечірки. "
@@ -753,6 +795,12 @@ async def admin_toggle_santa_reg(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Це тільки для адміна 🙃", show_alert=True)
         return
+
+    # якщо реєстрація ще закрита і ми хочемо її відкрити — перевіряємо бюджет
+    if not SANTA.registration_open and not SANTA.budget_text:
+        await callback.answer("Спочатку задай бюджет для гри 💰", show_alert=True)
+        return
+
     SANTA.registration_open = not SANTA.registration_open
     await admin_santa(callback)
 
@@ -999,13 +1047,23 @@ async def universal_handler(message: Message):
         return
 
     # --- Question to admin about Santa ---
-    if action == "ask_santa_admin":
+        if action == "ask_santa_admin":
+        text = message.text.strip()
+        lower = text.lower()
+        anonymous = "анонім" in lower
+
+        if anonymous:
+            header = "❓ Анонімне питання про Миколайчика:\\n\\n"
+        else:
+            header = (
+                f"❓ Питання про Миколайчика від {user.get('name') or user_id} "
+                f"(@{user.get('username') or '-'}):\\n\\n"
+            )
+
         try:
             await bot.send_message(
                 ADMIN_ID,
-                f"❓ Питання про Миколайчика від {user.get('name') or user_id} "
-                f"(@{user.get('username') or '-'})\n\n"
-                f"{message.text}",
+                header + text,
             )
             await message.answer("Я передав твоє питання організатору 🎅")
         except Exception:
@@ -1013,13 +1071,23 @@ async def universal_handler(message: Message):
         return
 
     # --- General feedback ---
-    if action == "fb_general":
+        if action == "fb_general":
+        text = message.text.strip()
+        lower = text.lower()
+        anonymous = "анонім" in lower
+
+        if anonymous:
+            header = "⭐ Анонімний фідбек:\\n\\n"
+        else:
+            header = (
+                f"⭐ Фідбек від {user.get('name') or user_id} "
+                f"(@{user.get('username') or '-'}):\\n\\n"
+            )
+
         try:
             await bot.send_message(
                 ADMIN_ID,
-                f"⭐ Фідбек від {user.get('name') or user_id} "
-                f"(@{user.get('username') or '-'})\n\n"
-                f"{message.text}",
+                header + text,
             )
             await message.answer("Дякую за фідбек! Я передав його організатору 🫶")
         except Exception:
