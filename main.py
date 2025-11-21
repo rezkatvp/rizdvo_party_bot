@@ -290,7 +290,7 @@ SANTA = SantaConfig()
 USERS: Dict[int, Dict[str, Any]] = {}
 PENDING_ACTION: Dict[int, str] = {}
 PENDING_CONTEXT: Dict[int, Any] = {}
-DATA_FILE = "party_datav2.json"
+DATA_FILE = "party_data.json"
 
 
 def _base_user_template() -> Dict[str, Any]:
