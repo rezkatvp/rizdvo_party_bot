@@ -3,6 +3,7 @@ import asyncio
 import random
 import json
 import logging
+import string
 from typing import Dict, Optional, Any
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -37,13 +38,40 @@ if not BOT_TOKEN:
 
 # ================== КОНСТАНТИ ВЕЧІРКИ ==================
 PARTY_NAME = os.getenv("PARTY_NAME", "Різдвяний Спектр")
-
-# Якщо змінних немає – підставимо базові значення, щоб бот не падав
 PARTY_LOCATION = os.getenv("PARTY_LOCATION", "Адресу скинемо окремо перед вечіркою 😉")
 PARTY_DATES_TEXT = os.getenv("PARTY_DATES_TEXT", "26 грудня, 18:00")
 
-PARTY_RULES = (
-    "📜 <b>Правила вечірки «Різдвяний Спектр»</b>\n\n"
+# ================== АКТИВНА ВЕЧІРКА ==================
+PARTY = {
+    "active": False,        # чи є активна вечірка
+    "name": PARTY_NAME,     # поточна назва
+    "location": PARTY_LOCATION,
+    "dates_text": PARTY_DATES_TEXT,
+    "code": None,           # код вечірки
+}
+
+
+def apply_party_to_globals():
+    """
+    Підтягуємо назву/адресу/дати з PARTY в глобальні змінні,
+    щоб решта коду могла й далі використовувати PARTY_NAME і т.д.
+    """
+    global PARTY_NAME, PARTY_LOCATION, PARTY_DATES_TEXT
+    if PARTY.get("name"):
+        PARTY_NAME = PARTY["name"]
+    if PARTY.get("location"):
+        PARTY_LOCATION = PARTY["location"]
+    if PARTY.get("dates_text"):
+        PARTY_DATES_TEXT = PARTY["dates_text"]
+
+
+def generate_party_code(length: int = 6) -> str:
+    chars = string.ascii_uppercase + string.digits
+    return "".join(random.choice(chars) for _ in range(length))
+
+def party_rules_text() -> str:
+    return (
+    "📜 <b>Правила вечірки «{PARTY_NAME}»</b>\n\n"
     "1. У кожного гостя є свій персональний <b>колір-образ</b>. "
     "Це має бути <b>моно-образ</b> — весь твій лук в одному кольорі.\n\n"
     "2. Разом з кольором ти отримаєш <b>роль</b> і <b>таємне міні-завдання</b>. "
@@ -262,7 +290,7 @@ SANTA = SantaConfig()
 USERS: Dict[int, Dict[str, Any]] = {}
 PENDING_ACTION: Dict[int, str] = {}
 PENDING_CONTEXT: Dict[int, Any] = {}
-DATA_FILE = "party_data.json"
+DATA_FILE = "party_datav2.json"
 
 
 def _base_user_template() -> Dict[str, Any]:
@@ -279,6 +307,8 @@ def _base_user_template() -> Dict[str, Any]:
         "drink": None,
         "name": None,
         "username": None,
+        "has_valid_code": False,
+        "party_code": None,
     }
 
 
@@ -292,6 +322,7 @@ async def save_data():
             "description": SANTA.description,
         },
         "COLORS_taken": {str(c["id"]): c["taken_by"] for c in COLORS},
+        "PARTY": PARTY,
     }
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -302,7 +333,7 @@ async def save_data():
 
 
 async def load_data():
-    global USERS
+    global USERS, PARTY
     if not os.path.exists(DATA_FILE):
         return
     try:
@@ -319,6 +350,14 @@ async def load_data():
         taken = raw.get("COLORS_taken", {})
         for c in COLORS:
             c["taken_by"] = taken.get(str(c["id"]))
+
+        # PARTY
+        party_raw = raw.get("PARTY")
+        if party_raw:
+            PARTY.update(party_raw)
+            # підтягнути назву/адресу/дати з файлу в глобальні константи
+            apply_party_to_globals()
+
         logger.info("Дані завантажено: %d гостей", len(USERS))
     except Exception as e:
         logger.error("Не вдалося завантажити дані: %s", e)
@@ -473,6 +512,7 @@ def santa_chat_kb(user: Dict[str, Any]) -> InlineKeyboardMarkup:
 def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="🎉 Налаштування вечірки", callback_data="admin_party")],
             [InlineKeyboardButton(text="👥 Список гостей", callback_data="admin_guests")],
             [InlineKeyboardButton(text="🎨 Кольори/ролі", callback_data="admin_colors")],
             [InlineKeyboardButton(text="🎅 Налаштування Миколайчика", callback_data="admin_santa")],
@@ -530,8 +570,21 @@ async def cmd_start(message: Message):
     # скидаємо будь-який "завислий" стан
     PENDING_ACTION.pop(user_id, None)
 
-    # якщо вже учасник і є колір — одразу меню
-    if user.get("participant") and user.get("color_id"):
+    # якщо немає активної вечірки — нікого не пускаємо
+    if not PARTY.get("active") or not PARTY.get("code"):
+        await message.answer(
+            "Зараз для тебе немає активних вечірок 😌\n\n"
+            "Як тільки організатор створить нову тусу і дасть код — ти зможеш зайти сюди знову."
+        )
+        return
+
+    # якщо юзер вже учасник цієї вечірки
+    if (
+        user.get("participant")
+        and user.get("color_id")
+        and user.get("party_code") == PARTY["code"]
+        and user.get("has_valid_code")
+    ):
         await message.answer(
             "Радий бачити тебе знову 🎄\nТи вже в списку гостей. Ось твоє меню 👇",
             reply_markup=main_menu_kb(user),
@@ -539,9 +592,18 @@ async def cmd_start(message: Message):
         await send_gif(message, START_GIF_ID)
         return
 
+    # якщо код ще не вводив або він від іншої (старої) вечірки — просимо код
+    if not user.get("has_valid_code") or user.get("party_code") != PARTY["code"]:
+        await message.answer(
+            "Щоб зайти на вечірку, введи, будь ласка, <b>код вечірки</b>, який дав тобі організатор."
+        )
+        PENDING_ACTION[user_id] = "enter_party_code"
+        return
+
+    # код правильний і актуальний, але людина ще не підтвердила участь
     text = (
         "Вау! ✨\n\n"
-        f"Тебе запросили на вечірку <b>«{PARTY_NAME}»</b>!\n\n"
+        f"Ти відкрив бота вечірки <b>«{PARTY_NAME}»</b>!\n\n"
         "Підтверди свою участь нижче — я додам тебе до списку гостей "
         "і допоможу підготуватись до свята 😉\n\n"
         "То ти з нами на вечірці?"
@@ -576,7 +638,7 @@ async def cb_party_yes(callback: CallbackQuery):
         f"🎄 <b>{PARTY_NAME}</b>\n"
         f"📍 {loc_html}\n"
         f"🗓 {PARTY_DATES_TEXT}\n\n"
-        f"{PARTY_RULES}"
+        f"{party_rules_text()}"
     )
 
     kb = InlineKeyboardMarkup(
@@ -712,7 +774,7 @@ async def about_party(message: Message):
         f"🎄 <b>{PARTY_NAME}</b>\n"
         f"📍 {loc_html}\n"
         f"🗓 {PARTY_DATES_TEXT}\n\n"
-        f"{PARTY_RULES}"
+        f"{party_rules_text()}"
     )
     await message.answer(text)
 
@@ -1083,6 +1145,74 @@ async def admin_guests(callback: CallbackQuery):
 
     await callback.message.edit_text("\n".join(lines), reply_markup=admin_menu_kb())
 
+def admin_party_menu_kb() -> InlineKeyboardMarkup:
+    buttons = []
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="🆕 Створити / оновити вечірку",
+                callback_data="admin_party_new",
+            )
+        ]
+    )
+
+    if PARTY.get("active"):
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text="🚫 Деактивувати вечірку",
+                    callback_data="admin_party_deactivate",
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.callback_query(F.data == "admin_party")
+async def admin_party(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Це тільки для адміна 🙃", show_alert=True)
+        return
+
+    status = "активна ✅" if PARTY.get("active") else "неактивна ❌"
+    code = PARTY.get("code") or "ще не згенеровано"
+
+    text = (
+        "🎉 <b>Налаштування вечірки</b>\n\n"
+        f"Статус: {status}\n"
+        f"Назва: {PARTY_NAME}\n"
+        f"Локація: {PARTY_LOCATION}\n"
+        f"Дати: {PARTY_DATES_TEXT}\n"
+        f"Код для гостей: <code>{code}</code>\n\n"
+        "Спочатку створи або онови вечірку, потім відправ код гостям."
+    )
+    await callback.message.edit_text(text, reply_markup=admin_party_menu_kb())
+
+@router.callback_query(F.data == "admin_party_new")
+async def admin_party_new(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Це тільки для адміна 🙃", show_alert=True)
+        return
+    PENDING_ACTION[callback.from_user.id] = "admin_party_name"
+    await callback.message.answer(
+        "Введи назву вечірки (наприклад: «Різдвяний спектр»)."
+    )
+
+
+@router.callback_query(F.data == "admin_party_deactivate")
+async def admin_party_deactivate(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Це тільки для адміна 🙃", show_alert=True)
+        return
+    PARTY["active"] = False
+    PARTY["code"] = None
+    await save_data()
+    await callback.message.answer(
+        "Я деактивував вечірку. Гості не зможуть зайти, поки ти не створиш нову.",
+        reply_markup=admin_menu_kb(),
+    )
 
 @router.callback_query(F.data == "admin_colors")
 async def admin_colors(callback: CallbackQuery):
@@ -1325,6 +1455,55 @@ async def universal_handler(message: Message):
         )
         return
 
+        # --- Введення коду вечірки ---
+    if action == "enter_party_code":
+        code = message.text.strip().upper()
+        current_code = (PARTY.get("code") or "").upper()
+
+        if not PARTY.get("active") or not current_code:
+            await message.answer(
+                "Зараз немає активних вечірок. Запитай код у організатора, коли він створить нову 😊"
+            )
+            return
+
+        if code != current_code:
+            await message.answer(
+                "Код не підходить 😔\n"
+                "Перевір, будь ласка, чи все правильно, або уточни у організатора."
+            )
+            PENDING_ACTION[user_id] = "enter_party_code"
+            return
+
+        # код вірний
+        user["has_valid_code"] = True
+        user["party_code"] = current_code
+        await save_data()
+
+        text = (
+            "Вау! ✨\n\n"
+            f"Тебе запросили на вечірку <b>«{PARTY_NAME}»</b>!\n\n"
+            "Підтверди свою участь нижче — я додам тебе до списку гостей "
+            "і допоможу підготуватись до свята 😉\n\n"
+            "То ти з нами на вечірці?"
+        )
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🎉 Так, я буду!", callback_data="party_yes"),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🙈 Я просто дивлюсь", callback_data="party_no"
+                    )
+                ],
+            ]
+        )
+
+        await message.answer(text, reply_markup=kb)
+        await send_gif(message, START_GIF_ID)
+        return
+
     # --- Страва ---
     if action == "set_dish":
         user["dish"] = message.text.strip()
@@ -1484,6 +1663,56 @@ async def universal_handler(message: Message):
             except Exception:
                 pass
         await message.answer(f"Розіслав оголошення {sent} учасникам 🎄")
+        return
+
+        # --- Admin: створити / оновити вечірку (wizard) ---
+    if action == "admin_party_name":
+        if user_id != ADMIN_ID:
+            await message.answer("Це тільки для адміна 🙃")
+            return
+        PARTY["name"] = message.text.strip()
+        apply_party_to_globals()
+        await save_data()
+        PENDING_ACTION[user_id] = "admin_party_location"
+        await message.answer(
+            "Супер! Тепер введи <b>локацію</b> (адресу) вечірки.\n"
+            "Наприклад: «Київ, вул. Таємна 7»."
+        )
+        return
+
+    if action == "admin_party_location":
+        if user_id != ADMIN_ID:
+            await message.answer("Це тільки для адміна 🙃")
+            return
+        PARTY["location"] = message.text.strip()
+        apply_party_to_globals()
+        await save_data()
+        PENDING_ACTION[user_id] = "admin_party_dates"
+        await message.answer(
+            "Ок! Тепер введи текст про дату/час.\n"
+            "Наприклад: «26 грудня, з 18:00 до відкриття метро» або «24–25 грудня, 19:00»."
+        )
+        return
+
+    if action == "admin_party_dates":
+        if user_id != ADMIN_ID:
+            await message.answer("Це тільки для адміна 🙃")
+            return
+        PARTY["dates_text"] = message.text.strip()
+        apply_party_to_globals()
+        PARTY["active"] = True
+        PARTY["code"] = generate_party_code()
+        await save_data()
+
+        await message.answer(
+            "Готово! Я оновив вечірку:\n\n"
+            f"Назва: <b>{PARTY_NAME}</b>\n"
+            f"Локація: {PARTY_LOCATION}\n"
+            f"Дати: {PARTY_DATES_TEXT}\n"
+            f"Код для гостей: <code>{PARTY['code']}</code>\n\n"
+            "Відправ цей код гостям. Без нього вони не зможуть зайти в бота 😉",
+            reply_markup=admin_menu_kb(),
+        )
         return
 
     # --- Admin: card to channel ---
