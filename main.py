@@ -30,7 +30,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 PARTY_CHANNEL_LINK = os.getenv("PARTY_CHANNEL_LINK")  # опціонально
 
 # GIF-и
-START_GIF_ID = os.getenv("START_GIF_ID")
+START_GIF_ID = "CgACAgIAAxkBAAEE_kVpIJHcbwutHFMVmzRWNSy4lG8CEQAC-YgAAuEo-EjlnrqzRWboTjYE"
 SANTA_GIF_ID = os.getenv("SANTA_GIF_ID")
 
 if not BOT_TOKEN:
