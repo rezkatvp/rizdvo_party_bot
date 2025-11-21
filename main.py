@@ -37,11 +37,10 @@ if not BOT_TOKEN:
 
 # ================== КОНСТАНТИ ВЕЧІРКИ ==================
 PARTY_NAME = os.getenv("PARTY_NAME", "Різдвяний Спектр")
-PARTY_LOCATION = os.getenv("PARTY_LOCATION")
-PARTY_DATES_TEXT = os.getenv("PARTY_DATES_TEXT")
 
-if not PARTY_LOCATION or not PARTY_DATES_TEXT:
-    raise RuntimeError("Задай PARTY_LOCATION та PARTY_DATES_TEXT в змінних середовища")
+# Якщо змінних немає – підставимо базові значення, щоб бот не падав
+PARTY_LOCATION = os.getenv("PARTY_LOCATION", "Адресу скинемо окремо перед вечіркою 😉")
+PARTY_DATES_TEXT = os.getenv("PARTY_DATES_TEXT", "26 грудня, 18:00")
 
 PARTY_RULES = (
     "📜 <b>Правила вечірки «Різдвяний Спектр»</b>\n\n"
