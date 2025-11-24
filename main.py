@@ -18,6 +18,8 @@ from aiogram.types import (
 )
 from aiogram.enums import ParseMode
 
+from datetime import datetime, date
+
 # ================== ЛОГІНГ ==================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,7 +31,11 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 PARTY_CHANNEL_LINK = os.getenv("PARTY_CHANNEL_LINK")  # канал
 PARTY_CHAT_LINK = os.getenv("PARTY_CHAT_LINK")        # чат вечірки (опційно)
 
-BRIDGE_REPLIES: Dict[tuple[int, int], Dict[str, Any]] = {}
+# BRIDGE_REPLIES по chat_id: постійний міст між двома співрозмовниками
+BRIDGE_REPLIES: Dict[int, Dict[str, Any]] = {}
+
+# Відкладені інвайти в чат/канал
+PENDING_INVITES: Dict[int, asyncio.Task] = {}
 
 # GIF-и
 START_GIF_ID = "CgACAgIAAxkBAAEE_kVpIJHcbwutHFMVmzRWNSy4lG8CEQAC-YgAAuEo-EjlnrqzRWboTjYE"
@@ -54,15 +60,24 @@ PARTY = {
 }
 
 
-def register_bridge_message(chat_id: int, message_id: int, peer_id: int, prefix: str):
+def register_bridge_message(
+    chat_id: int,
+    message_id: int,
+    peer_id: int,
+    prefix: str,
+    reverse_prefix: Optional[str] = None,
+):
     """
-    chat_id, message_id – де очікуємо reply
-    peer_id – кому потім відправляємо
-    prefix – текст перед відповіддю, наприклад: 'Організатор відповів: '
+    Реєструє міст:
+    - chat_id: з якого чату чекаємо reply
+    - peer_id: кому пересилаємо
+    - prefix: текст перед повідомленням у цьому напрямку
+    - reverse_prefix: що писати, коли міст перекинеться в інший бік
     """
-    BRIDGE_REPLIES[(chat_id, message_id)] = {
+    BRIDGE_REPLIES[chat_id] = {
         "peer_id": peer_id,
         "prefix": prefix,
+        "reverse_prefix": reverse_prefix or prefix,
     }
 
 
@@ -80,9 +95,6 @@ def generate_party_code(length: int = 6) -> str:
     import string
     chars = string.ascii_uppercase + string.digits
     return "".join(random.choice(chars) for _ in range(length))
-
-
-from datetime import datetime, date  # додай імпорт нагорі, якщо ще нема
 
 
 def party_rules_text(include_cta: bool = True) -> str:
@@ -117,7 +129,6 @@ router.message.filter(F.chat.type == "private")
 router.callback_query.filter(F.message.chat.type == "private")
 
 # ================== КОЛЬОРИ ТА ГОСТІ ==================
-# 1 гість = 1 колір. Тут — фінальний розподіл.
 COLORS: Dict[int, Dict[str, Any]] = {
     1: {
         "emoji": "🌸",
@@ -163,7 +174,6 @@ COLORS: Dict[int, Dict[str, Any]] = {
     },
 }
 
-# Привʼязка гостей до кольорів (фіксовано)
 PREASSIGNED_COLORS: Dict[int, int] = {
     228116679: 1,  # Алінка
     225843530: 2,  # Славік (адмін)
@@ -174,13 +184,11 @@ PREASSIGNED_COLORS: Dict[int, int] = {
     584640361: 7,  # Теща
 }
 
-# Універсальні завдання 6 та 7
 UNIVERSAL_TASKS = [
     "Організуй хоча б одне спільне фото компанії, де видно максимальну кількість кольорів образів.",
     "Скажи комусь один дуже щирий різдвяний комплімент так, щоб людина його запамʼятала.",
 ]
 
-# 7 завдань під кожного гостя (перші 5 – унікальні під колір/настрій)
 COLOR_TASKS: Dict[int, list[str]] = {
     1: [
         "ПОХВАЛИТИ ЧИЇСЬ ОБРАЗ АБО ДЕТАЛЬ У ДУЖЕ НІЖНОМУ, МʼЯКОМУ СТИЛІ.",
@@ -280,7 +288,7 @@ def _base_user_template() -> Dict[str, Any]:
         "menu_dish": None,
         "menu_drink": None,
         "menu_dessert": None,
-        "tasks_done": [],          # список bool по 7 завдань
+        "tasks_done": [],
         "santa_joined": False,
         "santa_wish": None,
         "santa_child_id": None,
@@ -290,8 +298,9 @@ def _base_user_template() -> Dict[str, Any]:
         "username": None,
         "has_valid_code": False,
         "party_code": None,
-        "feedback_requested": False,  # чи вже просили в нього відгук
+        "feedback_requested": False,
         "is_admin": False,
+        "channel_invited": False,  # чи вже відправляли інвайт у чат/канал
     }
 
 
@@ -344,6 +353,7 @@ async def send_gif(msg: Message, gif_id: Optional[str]):
     if not gif_id:
         return
     try:
+        await asyncio.sleep(0.7)
         await msg.answer_animation(animation=gif_id)
     except Exception as e:
         logger.warning("GIF не відправився: %s", e)
@@ -369,34 +379,76 @@ def is_feedback_time() -> bool:
     return date.today() >= d
 
 
+async def schedule_channel_invite(bot: Bot, user_id: int):
+    """Відкладене запрошення в чат/канал після меню."""
+    try:
+        await asyncio.sleep(3)
+        user = get_user(user_id)
+        if user.get("channel_invited"):
+            return
+        if not PARTY_CHAT_LINK and not PARTY_CHANNEL_LINK:
+            return
+
+        text_parts = ["Ще один важливий крок! 🎉\n"]
+        if PARTY_CHAT_LINK:
+            text_parts.append(
+                "Залети в наш чат вечірки — там ми спілкуємось, ділимось фотками та мемами:\n"
+                f"{PARTY_CHAT_LINK}\n"
+            )
+        if PARTY_CHANNEL_LINK:
+            text_parts.append(
+                "\nІ підпишись на канал вечірки, щоб не пропускати оголошення:\n"
+                f"{PARTY_CHANNEL_LINK}"
+            )
+
+        await bot.send_message(user_id, "".join(text_parts))
+        user["channel_invited"] = True
+        await save_data()
+    except asyncio.CancelledError:
+        # інвайт скасували, бо юзер щось зробив раніше
+        pass
+    except Exception as e:
+        logger.exception("Не зміг відправити запрошення в чат/канал: %s", e)
+
+
 # ================== КЛАВІАТУРИ ==================
 def main_menu_kb(user: Dict[str, Any]) -> ReplyKeyboardMarkup:
-    buttons = []
+    buttons: list[list[KeyboardButton]] = []
 
-    # 1. Відгук про вечірку – тільки для учасників і тільки після дати
-    if user.get("participant") and is_feedback_time():
-        buttons.append([KeyboardButton(text="⭐ Відгук про вечірку")])
-
-    # 2. Основні розділи
+    # Учасник
     if user.get("participant"):
-        buttons.append([KeyboardButton(text="👤 Мій кабінет")])
-        buttons.append([KeyboardButton(text="🎅 Мій Миколайчик")])
-        buttons.append([KeyboardButton(text="📜 Наше меню")])
+        # 1 ряд: кабінет + Миколайчик
+        buttons.append(
+            [
+                KeyboardButton(text="👤 Мій кабінет"),
+                KeyboardButton(text="🎅 Мій Миколайчик"),
+            ]
+        )
+
+        # 2 ряд: меню + відгук (якщо час)
+        row2 = [KeyboardButton(text="📜 Наше меню")]
+        if is_feedback_time():
+            row2.append(KeyboardButton(text="⭐ Відгук про вечірку"))
+        buttons.append(row2)
+
+        # 3 ряд: про вечірку
+        buttons.append([KeyboardButton(text="ℹ️ Про вечірку")])
     else:
-        # гість не підтвердив участь
+        # Не учасник — тільки інфо
         buttons.append([KeyboardButton(text="ℹ️ Про вечірку")])
 
-    # 3. Інфо-блоки
-    buttons.append([KeyboardButton(text="ℹ️ Про вечірку")])
-    row = []
-    row.append(KeyboardButton(text="📢 Канал вечірки"))
-    row.append(KeyboardButton(text="💬 Чат вечірки"))
-    buttons.append(row)
+    # Канал і чат
+    buttons.append(
+        [
+            KeyboardButton(text="📢 Канал вечірки"),
+            KeyboardButton(text="💬 Чат вечірки"),
+        ]
+    )
 
-    # 4. Допомога
+    # Допомога
     buttons.append([KeyboardButton(text="❓ Допомога")])
 
-    # 5. Адмін-панель
+    # Адмін
     if user.get("is_admin"):
         buttons.append([KeyboardButton(text="🛠 Адмін-панель")])
 
@@ -413,38 +465,6 @@ def cabinet_menu_kb() -> ReplyKeyboardMarkup:
         ],
         resize_keyboard=True,
     )
-
-
-@router.message(F.text == "🍽 Моє меню")
-async def my_menu(message: Message):
-    user = get_user(message.from_user.id)
-    if not user.get("participant"):
-        await message.answer("Спочатку підтверди участь у вечірці — напиши /start 🎄")
-        return
-
-    dish = user.get("menu_dish") or "ще не вказана"
-    drink = user.get("menu_drink") or "ще не вказаний"
-    dessert = user.get("menu_dessert") or "ще не вказаний"
-
-    text = (
-        "<b>Твоє меню:</b>\n"
-        f"• Страва: {dish}\n"
-        f"• Напій: {drink}\n"
-        f"• Десерт: {dessert}\n\n"
-        "Якщо хочеш змінити — просто напиши новий варіант, почавши з:\n"
-        "«Страва: ...», «Напій: ...» або «Десерт: ...»\n"
-        "або звʼяжись з організатором через «❓ Допомога»."
-    )
-    await message.answer(text)
-
-
-@router.message(F.text == "👤 Мій кабінет")
-async def cabinet_menu(message: Message):
-    user = get_user(message.from_user.id)
-    if not user.get("participant"):
-        await message.answer("Спочатку підтверди участь у вечірці — напиши /start 🎄")
-        return
-    await message.answer("Твій кабінет гостя:", reply_markup=cabinet_menu_kb())
 
 
 def santa_join_menu_kb(user: Dict[str, Any]) -> InlineKeyboardMarkup:
@@ -562,14 +582,6 @@ def admin_santa_menu_kb() -> InlineKeyboardMarkup:
     )
 
 
-@router.message(F.text == "🛠 Адмін-панель")
-async def admin_panel_button(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("Це тільки для адміна 🙃")
-        return
-    await message.answer("Привіт, організаторе 🎄 Що робимо?", reply_markup=admin_menu_kb())
-
-
 # ================== ХЕНДЛЕРИ КОРИСТУВАЧІВ ==================
 @router.message(CommandStart())
 async def cmd_start(message: Message):
@@ -577,7 +589,6 @@ async def cmd_start(message: Message):
     user = get_user(user_id)
     is_known_guest = user_id in PREASSIGNED_COLORS
 
-    # якщо гість відомий по списку – автоматично даємо доступ до вечірки
     if is_known_guest and PARTY.get("active") and PARTY.get("code"):
         current_code = PARTY["code"]
         if not user.get("has_valid_code") or user.get("party_code") != current_code:
@@ -711,6 +722,7 @@ async def cb_party_confirm_rules(callback: CallbackQuery):
         )
 
         await callback.message.edit_text(text)
+        await asyncio.sleep(0.7)
         await callback.message.answer(
             "Напиши, будь ласка, яку <b>страву</b> ти плануєш принести.",
             reply_markup=main_menu_kb(user),
@@ -720,7 +732,7 @@ async def cb_party_confirm_rules(callback: CallbackQuery):
         await callback.message.edit_text(
             "Ти підтвердив участь 🎄\n\n"
             "У цього бота немає для тебе заздалегідь призначеного кольору.\n"
-            "Напиши, будь ласка, організатору через «📞 Звʼязатись з організатором», "
+            "Напиши, будь ласка, організатору через «❓ Допомога» → «✉ Звʼязатись з організатором», "
             "щоб узгодити образ і меню.",
             reply_markup=main_menu_kb(user),
         )
@@ -784,6 +796,15 @@ async def party_chat(message: Message):
         )
 
 
+@router.message(F.text == "👤 Мій кабінет")
+async def cabinet_menu(message: Message):
+    user = get_user(message.from_user.id)
+    if not user.get("participant"):
+        await message.answer("Спочатку підтверди участь у вечірці — напиши /start 🎄")
+        return
+    await message.answer("Твій кабінет гостя:", reply_markup=cabinet_menu_kb())
+
+
 @router.message(F.text == "🎨 Мій образ")
 async def my_look(message: Message):
     user = get_user(message.from_user.id)
@@ -806,6 +827,29 @@ async def my_look(message: Message):
         f"Колір: <b>{color['label']}</b>\n"
         f"Роль: <b>{color['role']}</b>\n\n"
         "Завдання дивись у розділі «📋 Мої завдання» 😉"
+    )
+    await message.answer(text)
+
+
+@router.message(F.text == "🍽 Моє меню")
+async def my_menu(message: Message):
+    user = get_user(message.from_user.id)
+    if not user.get("participant"):
+        await message.answer("Спочатку підтверди участь у вечірці — напиши /start 🎄")
+        return
+
+    dish = user.get("menu_dish") or "ще не вказана"
+    drink = user.get("menu_drink") or "ще не вказаний"
+    dessert = user.get("menu_dessert") or "ще не вказаний"
+
+    text = (
+        "<b>Твоє меню:</b>\n"
+        f"• Страва: {dish}\n"
+        f"• Напій: {drink}\n"
+        f"• Десерт: {dessert}\n\n"
+        "Якщо хочеш змінити — просто напиши новий варіант, почавши з:\n"
+        "«Страва: ...», «Напій: ...» або «Десерт: ...»\n"
+        "або звʼяжись з організатором через «❓ Допомога»."
     )
     await message.answer(text)
 
@@ -961,13 +1005,11 @@ async def cb_task_toggle(callback: CallbackQuery):
 @router.callback_query(F.data == "task_ask_org")
 async def cb_task_ask_org(callback: CallbackQuery):
     user_id = callback.from_user.id
-    # Текст-інструкція для гостя
     sent = await callback.message.answer(
         "Напиши коротко про завдання, яке хочеш підтвердити, "
         "і потім у <b>відповідь на це повідомлення</b> надішли <b>одне фото</b> або текст.\n"
         "Все, що надішлеш у reply, я перешлю організатору."
     )
-    # Реєструємо міст: reply на це повідомлення піде організатору
     header = (
         f"📋 Запит щодо завдання від {callback.from_user.full_name} "
         f"(@{callback.from_user.username or '-'})\n\n"
@@ -977,6 +1019,7 @@ async def cb_task_ask_org(callback: CallbackQuery):
         message_id=sent.message_id,
         peer_id=ADMIN_ID,
         prefix=header,
+        reverse_prefix="Відповідь організатора щодо завдання: ",
     )
     await callback.answer()
 
@@ -1048,7 +1091,7 @@ async def my_santa(message: Message):
         "\n\nЩоб написати або відповісти у грі, просто обирай у меню:\n"
         "• «✉ Написати підопічному» — щоб написати тому, кому готуєш подарунок\n"
         "• «✉ Написати моєму Миколайчику» — щоб написати тому, хто готує подарунок для тебе\n\n"
-        "Кожне нове повідомлення починається з натискання відповідної кнопки — так зберігається анонімність."
+        "Кожне нове повідомлення починається з натискання відповідної кнопки — а далі можна відповідати в реплаях, і бот перенесе все анонімно."
     )
     await message.answer("".join(parts), reply_markup=santa_chat_kb(user))
 
@@ -1124,7 +1167,6 @@ async def cb_santa_leave(callback: CallbackQuery):
 
     logger.info("Користувач %s вийшов з вечірки та гри Santa", user.get("name") or user_id)
 
-    # Повністю скидаємо стан
     USERS[user_id] = _base_user_template()
     await save_data()
 
@@ -1146,7 +1188,8 @@ async def cb_msg_child(callback: CallbackQuery):
     PENDING_ACTION[callback.from_user.id] = "msg_child"
     await callback.message.answer(
         "Напиши повідомлення, яке я анонімно перешлю твоєму підопічному 👇\n\n"
-        "Щоб відповісти пізніше ще раз — знову обери в меню «✉ Написати підопічному»."
+        "Щоб відповісти пізніше ще раз — можна або знову обрати «✉ Написати підопічному», "
+        "або просто відповідати в реплаях у вже існуючій переписці."
     )
 
 
@@ -1162,7 +1205,8 @@ async def cb_msg_santa(callback: CallbackQuery):
     PENDING_ACTION[callback.from_user.id] = "msg_santa"
     await callback.message.answer(
         "Напиши повідомлення, яке я анонімно перешлю твоєму Миколайчику 👇\n\n"
-        "Щоб відповісти ще раз — знову обери в меню «✉ Написати моєму Миколайчику»."
+        "Щоб відповісти ще раз — можна або знову обрати «✉ Написати моєму Миколайчику», "
+        "або просто відповідати в реплаях у вже існуючій переписці."
     )
 
 
@@ -1197,8 +1241,7 @@ async def cb_fb_santa_question(callback: CallbackQuery):
 async def cb_ask_org(callback: CallbackQuery):
     PENDING_ACTION[callback.from_user.id] = "ask_org"
     await callback.message.answer(
-        "Напиши своє повідомлення організатору. "
-        "Якщо хочеш анонімно — додай слово «анонімно» у текст."
+        "Напиши своє повідомлення організатору. Якщо хочеш анонімно — додай слово «анонімно» у текст."
     )
 
 
@@ -1208,6 +1251,14 @@ async def cb_noop(callback: CallbackQuery):
 
 
 # ================== АДМІН ==================
+@router.message(F.text == "🛠 Адмін-панель")
+async def admin_panel_button(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Це тільки для адміна 🙃")
+        return
+    await message.answer("Привіт, організаторе 🎄 Що робимо?", reply_markup=admin_menu_kb())
+
+
 @router.message(Command("admin"))
 async def cmd_admin(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -1362,8 +1413,28 @@ async def admin_toggle_santa_reg(callback: CallbackQuery):
         await callback.answer("Спочатку задай бюджет для гри 💰", show_alert=True)
         return
 
+    old_state = SANTA.registration_open
     SANTA.registration_open = not SANTA.registration_open
     await save_data()
+
+    # Якщо відкрили реєстрацію – розіслати всім учасникам
+    if SANTA.registration_open and not old_state:
+        bot: Bot = callback.message.bot
+        text = (
+            "🎅 Організатор відкрив реєстрацію на гру «Таємний Миколайчик»!\n\n"
+            "Зазирни в розділ «🎅 Мій Миколайчик» у меню бота, щоб приєднатися 😉"
+        )
+        sent = 0
+        for uid, data in USERS.items():
+            if not data.get("participant"):
+                continue
+            try:
+                await bot.send_message(uid, text)
+                sent += 1
+            except Exception as e:
+                logger.exception("Не зміг надіслати сповіщення про реєстрацію Santa %s: %s", uid, e)
+        logger.info("Розіслано сповіщення про відкриття реєстрації Santa %d гостям", sent)
+
     await admin_santa(callback)
 
 
@@ -1538,16 +1609,16 @@ async def cmd_cancel(message: Message):
         await message.answer("Нічого скасовувати 😉", reply_markup=main_menu_kb(get_user(uid)))
 
 
+# ================== REPLY-БРІДЖ ==================
 @router.message(F.reply_to_message)
 async def reply_bridge(message: Message):
-    key = (message.chat.id, message.reply_to_message.message_id)
-    meta = BRIDGE_REPLIES.get(key)
+    meta = BRIDGE_REPLIES.get(message.chat.id)
     if not meta:
-        # Немає мосту – віддамо це universal_handler'у
         return
 
     peer_id = meta["peer_id"]
     prefix = meta["prefix"]
+    reverse_prefix = meta.get("reverse_prefix", prefix)
 
     text_part = message.text or message.caption or ""
     bot: Bot = message.bot
@@ -1557,25 +1628,33 @@ async def reply_bridge(message: Message):
         if text_part:
             await bot.send_message(peer_id, f"{prefix}{text_part}")
 
-        # якщо є медіа – докинути копією (фото, відео і т.д.)
-        if message.photo:
+        # якщо є медіа – докинути копією
+        if message.photo or message.document or message.video or message.audio or message.voice:
             await bot.copy_message(peer_id, message.chat.id, message.message_id)
-        elif message.document:
-            await bot.copy_message(peer_id, message.chat.id, message.message_id)
-        elif message.video:
-            await bot.copy_message(peer_id, message.chat.id, message.message_id)
-        # за потреби можна додати ще типи
+
+        # тепер перекинемо міст у зворотній бік
+        BRIDGE_REPLIES[peer_id] = {
+            "peer_id": message.chat.id,
+            "prefix": reverse_prefix,
+            "reverse_prefix": prefix,
+        }
 
     except Exception as e:
         logger.exception("Помилка при пересиланні reply: %s", e)
 
 
-# ================== УНІВЕРСАЛЬНИЙ ХЕНДЛЕР ==================
-@router.message()
+# ================== УНІВЕРСАЛЬНИЙ ХЕНДЛЕР (НЕ ДЛЯ REPLY) ==================
+@router.message(~F.reply_to_message)
 async def universal_handler(message: Message):
     user_id = message.from_user.id
     user = get_user(user_id)
     bot: Bot = message.bot
+
+    # якщо був відкладений інвайт в чат/канал — скасуємо, бо юзер щось робить
+    invite_task = PENDING_INVITES.pop(user_id, None)
+    if invite_task:
+        invite_task.cancel()
+
     action = PENDING_ACTION.pop(user_id, None)
 
     if not action:
@@ -1668,14 +1747,14 @@ async def universal_handler(message: Message):
         )
         await save_data()
 
-        # Запрошення в чат вечірки + GIF
+        # GIF – з невеликою паузою
         await send_gif(message, START_GIF_ID)
-        if PARTY_CHAT_LINK:
-            await message.answer(
-                "Ще один важливий крок! 🎉\n"
-                "Залеті в наш чат вечірки — там ми спілкуємось, ділимось фотками та мемами:\n"
-                f"{PARTY_CHAT_LINK}"
-            )
+
+        # Відкладене запрошення в чат/канал, якщо ще не надсилали
+        if not user.get("channel_invited") and (PARTY_CHAT_LINK or PARTY_CHANNEL_LINK):
+            task = asyncio.create_task(schedule_channel_invite(bot, user_id))
+            PENDING_INVITES[user_id] = task
+
         return
 
     # --- Santa wish ---
@@ -1702,18 +1781,22 @@ async def universal_handler(message: Message):
 
         if action == "msg_child":
             prefix_to_target = "Твій Таємний Миколайчик пише:\n\n"
-            reply_prefix_back = "Твій підопічний відповів: "
+            prefix_back = "Твій підопічний відповів: "
+            reverse_for_back = "Твій Таємний Миколайчик відповів: "
         else:
             prefix_to_target = "Твій підопічний у грі «Таємний Миколайчик» пише:\n\n"
-            reply_prefix_back = "Твій Таємний Миколайчик відповів: "
+            prefix_back = "Твій Таємний Миколайчик відповів: "
+            reverse_for_back = "Твій підопічний відповів: "
 
         try:
             sent = await bot.send_message(target_id, prefix_to_target + (message.text or ""))
+            # реєструємо міст: replies з target_id -> user_id
             register_bridge_message(
                 chat_id=target_id,
                 message_id=sent.message_id,
                 peer_id=user_id,
-                prefix=reply_prefix_back,
+                prefix=prefix_back,
+                reverse_prefix=reverse_for_back,
             )
             await message.answer("Я передав твоє повідомлення ✉")
         except Exception as e:
@@ -1732,7 +1815,7 @@ async def universal_handler(message: Message):
         else:
             header = (
                 f"❓ Питання про Миколайчика від {user.get('name') or user_id} "
-                f"(@{user.get('username') or '-'}):\n\n"
+                f"(@{user.get('username') or '-'})\n\n"
             )
 
         try:
@@ -1754,7 +1837,7 @@ async def universal_handler(message: Message):
         else:
             header = (
                 f"⭐ Фідбек від {user.get('name') or user_id} "
-                f"(@{user.get('username') or '-'}):\n\n"
+                f"(@{user.get('username') or '-'})\n\n"
             )
 
         try:
@@ -1776,7 +1859,7 @@ async def universal_handler(message: Message):
         else:
             header = (
                 f"📞 Повідомлення для організатора від {user.get('name') or user_id} "
-                f"(@{user.get('username') or '-'}):\n\n"
+                f"(@{user.get('username') or '-'})\n\n"
             )
 
         try:
@@ -1786,6 +1869,7 @@ async def universal_handler(message: Message):
                 message_id=sent.message_id,
                 peer_id=user_id,
                 prefix="Організатор відповів: ",
+                reverse_prefix="Відповідь гостя: ",
             )
             await message.answer(
                 "Я передав твоє повідомлення організатору ✅",
@@ -1889,12 +1973,12 @@ async def universal_handler(message: Message):
         )
         try:
             sent = await bot.send_message(ADMIN_ID, header + txt)
-            # зареєструємо міст для відповіді адміна
             register_bridge_message(
                 chat_id=ADMIN_ID,
                 message_id=sent.message_id,
                 peer_id=user_id,
                 prefix="Організатор відповів: ",
+                reverse_prefix="Відповідь гостя: ",
             )
             user["feedback_requested"] = True
             await save_data()
