@@ -1512,6 +1512,7 @@ async def cb_santa_leave(callback: CallbackQuery):
 
     # Повністю скидаємо стан
     USERS[user_id] = _base_user_template()
+    USERS[user_id]["postmenu_followups_blocked"] = True
     await save_data()
 
     await callback.message.edit_text(
@@ -1575,10 +1576,10 @@ async def cb_ask_org(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     mark_user_active(user)
     PENDING_ACTION[callback.from_user.id] = "ask_org"
-    await callback.message.answer(
-        "Напиши своє повідомлення організатору. "
-        "Якщо хочеш анонімно — додай слово «анонімно» у текст."
-    )
+    msg = await callback.message.answer(
+            "Напиши своє повідомлення організатору. "
+            "Якщо хочеш анонімно — додай слово «анонімно» у текст."
+        )
     await send_gif(msg, ORG_CHAT_GIF_ID)
 
 
@@ -1970,6 +1971,12 @@ async def reply_bridge(message: Message):
 # ================== УНІВЕРСАЛЬНИЙ ХЕНДЛЕР ==================
 @router.message()
 async def universal_handler(message: Message):
+    # Якщо це reply на повідомлення, яке вже обробляє міст – нічого тут не робимо
+    if message.reply_to_message:
+        key = (message.chat.id, message.reply_to_message.message_id)
+        if key in BRIDGE_REPLIES:
+            return
+
     user_id = message.from_user.id
     user = get_user(user_id)
     bot: Bot = message.bot
@@ -2015,6 +2022,7 @@ async def universal_handler(message: Message):
             "Я бачу це повідомлення тільки як бот 🙈\n\n"
             "Щоб написати організатору — натисни «❓ Допомога» → «✉ Звʼязатись з організатором Ніколасом».\n"
             "Щоб написати в грі «Таємний Миколайчик» — зайди в «🎅 Мій Миколайчик» і користуйся кнопками «✉ ...».\n\n"
+            "Якщо хочеш відповісти на повідомлення — використай меню «Відповісти».\n"
             "Користуйся кнопками нижче 👇",
             reply_markup=main_menu_kb(user),
         )
