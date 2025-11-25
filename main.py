@@ -722,6 +722,11 @@ async def admin_panel_button(message: Message):
 
 
 # ================== ХЕНДЛЕРИ КОРИСТУВАЧІВ ==================
+@router.message(F.animation)
+async def get_gif_id(message: Message):
+    print(message.animation.file_id)
+    await message.answer(f"file_id:\n<code>{message.animation.file_id}</code>")
+
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     user_id = message.from_user.id
