@@ -718,6 +718,19 @@ def admin_santa_menu_kb() -> InlineKeyboardMarkup:
     )
 
 
+@router.message(F.animation)
+async def get_gif_id(message: Message):
+    """
+    Показує file_id GIF тільки якщо юзер не в процесі відгуку / завдання / запиту.
+    Щоб не ламати сценарії fb_collect / task_ask_org / ask_org.
+    """
+    action = PENDING_ACTION.get(message.from_user.id)
+    if action in {"fb_collect", "task_ask_org", "ask_org"}:
+        return
+    print(message.animation.file_id)
+    await message.answer(f"file_id:\n<code>{message.animation.file_id}</code>")
+
+
 @router.message(F.text == "🛠 Адмін-панель")
 async def admin_panel_button(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -729,11 +742,6 @@ async def admin_panel_button(message: Message):
 
 
 # ================== ХЕНДЛЕРИ КОРИСТУВАЧІВ ==================
-@router.message(F.animation)
-async def get_gif_id(message: Message):
-    print(message.animation.file_id)
-    await message.answer(f"file_id:\n<code>{message.animation.file_id}</code>")
-
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -933,6 +941,7 @@ async def cb_menu_later(callback: CallbackQuery):
         "або змінити страву, напій і десерт.",
         reply_markup=main_menu_kb(user),
     )
+
 
 @router.callback_query(F.data == "edit_dish")
 async def cb_edit_dish(callback: CallbackQuery):
@@ -1418,11 +1427,9 @@ async def cb_fb_send(callback: CallbackQuery):
     ctx = PENDING_CONTEXT.get(user_id) or {}
     fb_msgs = ctx.get("fb_msgs") or []
 
-    
     if not fb_msgs:
         await callback.answer("Ти ще нічого не написав у відгуку 🙈", show_alert=True)
         return
-    
 
     bot: Bot = callback.message.bot
 
@@ -1576,11 +1583,12 @@ async def cb_ask_org(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     mark_user_active(user)
     PENDING_ACTION[callback.from_user.id] = "ask_org"
-    msg = await callback.message.answer(
-            "Напиши своє повідомлення організатору. "
-            "Якщо хочеш анонімно — додай слово «анонімно» у текст."
-        )
-    await send_gif(msg, ORG_CHAT_GIF_ID)
+    await callback.message.answer(
+        "Напиши своє повідомлення організатору. "
+        "Якщо хочеш анонімно — додай слово «анонімно» у текст."
+    )
+    # GIF чіпляємо до вихідного повідомлення callbackʼа, щоб не плутати з інструкцією
+    await send_gif(callback.message, ORG_CHAT_GIF_ID)
 
 
 # ================== АДМІН ==================
@@ -1927,7 +1935,8 @@ async def reply_bridge(message: Message):
     Працює багаторазово за рахунок дзеркальних якірів.
     """
     key = (message.chat.id, message.reply_to_message.message_id)
-    meta = BRIDGE_REPLIES.get(key)
+    # робимо міст одноразовим: використали — видалили
+    meta = BRIDGE_REPLIES.pop(key, None)
     if not meta:
         # Немає мосту – віддамо це universal_handler'у
         return
@@ -1948,7 +1957,7 @@ async def reply_bridge(message: Message):
             sent_msg = await bot.send_message(peer_id, f"{prefix_to_peer}{text_part}")
 
         # якщо є медіа – докинути копією (фото, відео і т.д.)
-        if message.photo or message.document or message.video:
+        if message.photo or message.document or message.video or message.animation:
             media_sent = await bot.copy_message(peer_id, message.chat.id, message.message_id)
             # якщо тексту не було — в якості "якоря" беремо медіа
             if sent_msg is None:
@@ -1963,6 +1972,12 @@ async def reply_bridge(message: Message):
                 prefix_to_peer=reply_prefix_back,
                 reply_prefix_back=prefix_to_peer,
             )
+            # позначаємо активність того, кому щойно відправили
+            try:
+                peer_user = get_user(peer_id)
+                mark_user_active(peer_user)
+            except Exception:
+                pass
 
     except Exception as e:
         logger.exception("Помилка при пересиланні reply: %s", e)
@@ -2107,15 +2122,16 @@ async def universal_handler(message: Message):
         await save_data()
         return
 
-        # --- Локальне редагування меню: тільки один пункт ---
+    # --- Локальне редагування меню: тільки один пункт ---
     if action == "edit_dish":
         PENDING_ACTION.pop(user_id, None)
         user["menu_dish"] = (message.text or "").strip()
         await save_data()
         await message.answer(
             f"Оновив твою страву 🍽️\nНове значення: {user['menu_dish']}",
-            reply_markup=main_menu_kb(user),
         )
+        # Після редагування одразу показуємо актуальне меню з кнопками що ще змінити
+        await my_menu(message)
         return
 
     if action == "edit_drink":
@@ -2124,8 +2140,8 @@ async def universal_handler(message: Message):
         await save_data()
         await message.answer(
             f"Оновив твій напій 🥂\nНове значення: {user['menu_drink']}",
-            reply_markup=main_menu_kb(user),
         )
+        await my_menu(message)
         return
 
     if action == "edit_dessert":
@@ -2134,8 +2150,8 @@ async def universal_handler(message: Message):
         await save_data()
         await message.answer(
             f"Оновив твій десерт 🍰\nНове значення: {user['menu_dessert']}",
-            reply_markup=main_menu_kb(user),
         )
+        await my_menu(message)
         return
 
     if action == "set_dessert":
@@ -2185,7 +2201,7 @@ async def universal_handler(message: Message):
                 )
 
             # Якщо є медіа — докидаємо його окремо
-            if message.photo or message.video or message.document:
+            if message.photo or message.video or message.document or message.animation:
                 media_msg = await bot.copy_message(
                     ADMIN_ID,
                     message.chat.id,
@@ -2247,14 +2263,32 @@ async def universal_handler(message: Message):
             reply_prefix_back = "Твій Таємний Миколайчик відповів: "
 
         try:
-            sent = await bot.send_message(target_id, prefix_to_target + (message.text or ""))
-            register_bridge_message(
-                chat_id=target_id,
-                message_id=sent.message_id,
-                peer_id=user_id,
-                prefix_to_peer=reply_prefix_back,
-                reply_prefix_back=prefix_to_target,
-            )
+            text_part = message.text or message.caption or ""
+            anchor_msg: Optional[Message] = None
+
+            if text_part:
+                anchor_msg = await bot.send_message(
+                    target_id,
+                    prefix_to_target + text_part,
+                )
+
+            if message.photo or message.video or message.document or message.animation:
+                media_msg = await bot.copy_message(
+                    target_id,
+                    message.chat.id,
+                    message.message_id,
+                )
+                if anchor_msg is None:
+                    anchor_msg = media_msg
+
+            if anchor_msg:
+                register_bridge_message(
+                    chat_id=anchor_msg.chat.id,
+                    message_id=anchor_msg.message_id,
+                    peer_id=user_id,
+                    prefix_to_peer=reply_prefix_back,
+                    reply_prefix_back=prefix_to_target,
+                )
             await message.answer("Я передав твоє повідомлення ✉")
         except Exception as e:
             logger.exception("Не зміг доставити Santa-повідомлення %s → %s: %s", user_id, target_id, e)
