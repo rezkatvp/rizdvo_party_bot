@@ -35,9 +35,9 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не заданий в змінних середовища")
 
 # ================== КОНСТАНТИ ВЕЧІРКИ ==================
-PARTY_NAME = os.getenv("PARTY_NAME", "Різдвяний Спектр")
-PARTY_LOCATION = os.getenv("PARTY_LOCATION", "Адресу скинемо окремо перед вечіркою 😉")
-PARTY_DATES_TEXT = os.getenv("PARTY_DATES_TEXT", "26 грудня, 18:00")
+PARTY_NAME = os.getenv("PARTY_NAME", "Наприклад: "Нічна вечірка"")
+PARTY_LOCATION = os.getenv("PARTY_LOCATION", "Наприклад: Клуб Indigo")
+PARTY_DATES_TEXT = os.getenv("PARTY_DATES_TEXT", "Наприклад: 5 липня, 21:00")
 
 # ================== АКТИВНА ВЕЧІРКА ==================
 PARTY = {
