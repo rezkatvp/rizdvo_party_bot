@@ -36,8 +36,15 @@ PARTY_CHAT_LINK = os.getenv("PARTY_CHAT_LINK")        # чат вечірки (�
 BRIDGE_REPLIES: Dict[tuple[int, int], Dict[str, Any]] = {}
 
 # GIF-и
-START_GIF_ID = "CgACAgIAAxkBAAEE_kVpIJHcbwutHFMVmzRWNSy4lG8CEQAC-YgAAuEo-EjlnrqzRWboTjYE"
-SANTA_GIF_ID = os.getenv("SANTA_GIF_ID")
+START_GIF_ID = "CgACAgIAAxkBAAIGaWklx4T4qipoaoAnQ-zZtONcI3PSAAKtggACY8QxSbsclWHIN-W8NgQ"  # START_ID
+
+REMINDER_GIF_ID = "CgACAgIAAxkBAAIGZ2klx3L0zD481ukoCP5wcyZoU2RvAAK7ggACY8QxSVcrC1dM5txpNgQ"  # перший REMINDER_GIF
+FEEDBACK_GIF_ID = "CgACAgIAAxkBAAIGb2klx8F-8H2XNpnZ_RkDngX68S2wAAKzggACY8QxSWy31mkhfyKuNgQ"   # другий REMINDER_GIF (для відгуків, якщо захочеш)
+
+MENU_DONE_GIF_ID = "CgACAgIAAxkBAAIGa2klx6CGh8L5YmM8MHFLr7M1FxD2AAK4ggACY8QxSX7HU6jJHmdgNgQ"
+ORG_CHAT_GIF_ID = "CgACAgIAAxkBAAIGbWklx7HmCZiIznwWnv9wXSUu6Tb4AAK2ggACY8QxSaGWcPcdf7p0NgQ"
+SANTA_GIF_ID = "CgACAgIAAxkBAAIGcWklx9FKMEWywriPw7qL_GtwHaMYAAKxggACY8QxSThBFeYzRtypNgQ"
+TASKS_GIF_ID = "CgACAgIAAxkBAAIGc2klx-Cwde-W_ZSRS5Af3GSxAR_NAAKrggACY8QxSeWebmRmuTecNgQ"
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не заданий в змінних середовища")
@@ -455,7 +462,7 @@ async def postmenu_followups(bot: Bot, user_id: int):
             "Натискай «❓ Допомога» в меню, а потім кнопку "
             "«✉ Звʼязатись з організатором Ніколасом»."
         )
-        await send_gif(msg, START_GIF_ID)
+        await send_gif(msg, REMINDER_GIF_ID)
     except Exception as e:
         logger.warning("Не зміг надіслати фінальне нагадування: %s", e)
 
@@ -1093,6 +1100,7 @@ async def guests_menu_for_user(message: Message):
         lines.append("Поки ще ніхто не додав своє меню 🤔")
 
     await message.answer("\n".join(lines))
+    await send_gif(message, TASKS_GIF_ID)
 
 
 def ensure_tasks_state(user: Dict[str, Any]) -> list[int]:
@@ -1406,13 +1414,15 @@ async def cb_fb_start(callback: CallbackQuery):
 async def cb_fb_send(callback: CallbackQuery):
     user_id = callback.from_user.id
     user = get_user(user_id)
-
+    await send_gif(callback.message, FEEDBACK_GIF_ID)
     ctx = PENDING_CONTEXT.get(user_id) or {}
     fb_msgs = ctx.get("fb_msgs") or []
 
+    
     if not fb_msgs:
         await callback.answer("Ти ще нічого не написав у відгуку 🙈", show_alert=True)
         return
+    
 
     bot: Bot = callback.message.bot
 
@@ -1569,6 +1579,7 @@ async def cb_ask_org(callback: CallbackQuery):
         "Напиши своє повідомлення організатору. "
         "Якщо хочеш анонімно — додай слово «анонімно» у текст."
     )
+    await send_gif(msg, ORG_CHAT_GIF_ID)
 
 
 # ================== АДМІН ==================
@@ -2131,7 +2142,7 @@ async def universal_handler(message: Message):
             f"• Десерт: {user['menu_dessert']}",
             reply_markup=main_menu_kb(user),
         )
-        await send_gif(message, START_GIF_ID)
+        await send_gif(message, MENU_DONE_GIF_ID)
         await asyncio.sleep(0.5)
         await message.answer(
             "Памʼятай, що меню бажано має підходити під твій образ — "
