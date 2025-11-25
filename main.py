@@ -522,20 +522,68 @@ async def my_menu(message: Message):
 
     mark_user_active(user)
 
-    dish = user.get("menu_dish") or "ще не вказана"
-    drink = user.get("menu_drink") or "ще не вказаний"
-    dessert = user.get("menu_dessert") or "ще не вказаний"
+    dish = user.get("menu_dish")
+    drink = user.get("menu_drink")
+    dessert = user.get("menu_dessert")
+
+    dish_txt = dish or "ще не вказана"
+    drink_txt = drink or "ще не вказаний"
+    dessert_txt = dessert or "ще не вказаний"
 
     text = (
         "<b>Твоє меню:</b>\n"
-        f"• Страва: {dish}\n"
-        f"• Напій: {drink}\n"
-        f"• Десерт: {dessert}\n\n"
-        "Якщо хочеш змінити — просто напиши новий варіант, почавши з:\n"
-        "«Страва: ...», «Напій: ...» або «Десерт: ...»\n"
-        "або звʼяжись з організатором через «❓ Допомога»."
+        f"• Страва: {dish_txt}\n"
+        f"• Напій: {drink_txt}\n"
+        f"• Десерт: {dessert_txt}\n"
     )
-    await message.answer(text)
+
+    # Якщо меню ще взагалі не заповнене — пропонуємо заповнити
+    if not dish and not drink and not dessert:
+        text += (
+            "\nЗараз у тебе ще нічого не вказано.\n"
+            "Можеш заповнити меню прямо зараз 👇"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📝 Заповнити меню зараз",
+                        callback_data="menu_now",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="⏱ Пізніше додам",
+                        callback_data="menu_later",
+                    )
+                ],
+            ]
+        )
+        await message.answer(text, reply_markup=kb)
+        return
+
+    # Якщо щось вже є — питаємо, що саме змінити
+    text += (
+        "\nЩо хочеш змінити?\n"
+        "Можеш обрати варіант нижче, або вручну написати:\n"
+        "«Страва: ...», «Напій: ...» або «Десерт: ...»."
+    )
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✏ Змінити страву", callback_data="edit_dish"),
+            ],
+            [
+                InlineKeyboardButton(text="🥂 Змінити напій", callback_data="edit_drink"),
+            ],
+            [
+                InlineKeyboardButton(text="🍰 Змінити десерт", callback_data="edit_dessert"),
+            ],
+        ]
+    )
+
+    await message.answer(text, reply_markup=kb)
 
 
 @router.message(F.text == "👤 Мій кабінет")
@@ -874,6 +922,38 @@ async def cb_menu_later(callback: CallbackQuery):
         reply_markup=main_menu_kb(user),
     )
 
+@router.callback_query(F.data == "edit_dish")
+async def cb_edit_dish(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    if not user.get("participant"):
+        await callback.answer("Спочатку підтверди участь через /start 🎄", show_alert=True)
+        return
+    await callback.message.answer("Добре, напиши нову <b>страву</b>, яку ти плануєш принести.")
+    PENDING_ACTION[callback.from_user.id] = "edit_dish"
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_drink")
+async def cb_edit_drink(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    if not user.get("participant"):
+        await callback.answer("Спочатку підтверди участь через /start 🎄", show_alert=True)
+        return
+    await callback.message.answer("Напиши, будь ласка, новий <b>напій</b> для меню.")
+    PENDING_ACTION[callback.from_user.id] = "edit_drink"
+    await callback.answer()
+
+
+@router.callback_query(F.data == "edit_dessert")
+async def cb_edit_dessert(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    if not user.get("participant"):
+        await callback.answer("Спочатку підтверди участь через /start 🎄", show_alert=True)
+        return
+    await callback.message.answer("Напиши, будь ласка, новий <b>десерт</b> для меню.")
+    PENDING_ACTION[callback.from_user.id] = "edit_dessert"
+    await callback.answer()
+
 
 @router.callback_query(F.data == "party_no_after_rules")
 async def cb_party_no_after_rules(callback: CallbackQuery):
@@ -1010,17 +1090,42 @@ async def guests_menu_for_user(message: Message):
     await message.answer("\n".join(lines))
 
 
-def ensure_tasks_state(user: Dict[str, Any]) -> list[bool]:
+def ensure_tasks_state(user: Dict[str, Any]) -> list[int]:
+    """
+    0 = ще не виконав
+    1 = виконав (✅)
+    2 = провалено / зловили (❌)
+    """
     color_id = user.get("color_id")
     if not color_id or color_id not in COLOR_TASKS:
         return []
-    total = len(COLOR_TASKS[color_id])
-    done = user.get("tasks_done") or []
-    if len(done) != total:
-        done = (done + [False] * total)[:total]
-        user["tasks_done"] = done
-    return done
 
+    total = len(COLOR_TASKS[color_id])
+    raw = user.get("tasks_done") or []
+
+    norm: list[int] = []
+    for v in raw:
+        if isinstance(v, bool):
+            norm.append(1 if v else 0)
+        elif isinstance(v, int) and v in (0, 1, 2):
+            norm.append(v)
+        else:
+            norm.append(0)
+
+    if len(norm) < total:
+        norm += [0] * (total - len(norm))
+    if len(norm) > total:
+        norm = norm[:total]
+
+    user["tasks_done"] = norm
+    return norm
+
+def task_state_icon(state: int) -> str:
+    if state == 1:
+        return "✅"
+    if state == 2:
+        return "❌"
+    return "⬜"
 
 def tasks_inline_kb(user: Dict[str, Any]) -> InlineKeyboardMarkup:
     color_id = user.get("color_id")
@@ -1028,7 +1133,7 @@ def tasks_inline_kb(user: Dict[str, Any]) -> InlineKeyboardMarkup:
     done = ensure_tasks_state(user)
     rows = []
     for idx, _ in enumerate(tasks):
-        mark = "✅" if done[idx] else "⬜"
+        mark = task_state_icon(done[idx])
         rows.append(
             [
                 InlineKeyboardButton(
@@ -1067,12 +1172,18 @@ async def my_tasks(message: Message):
 
     lines = ["📋 <b>Твої завдання</b>\n"]
     for idx, t in enumerate(tasks):
-        mark = "✅" if done[idx] else "⬜"
+        mark = task_state_icon(done[idx])
         lines.append(f"{mark} <b>{idx + 1}.</b> {t}")
     lines.append(
-        "\nМожеш сам відмічати виконані завдання натиском на кнопки нижче.\n"
-        "Якщо завдання повʼязане з фото або чимось, що треба підтвердити — "
-        "натисни «✉ Запит до організатора» і надішли одне фото у відповіді на повідомлення."
+        "\nПозначення:\n"
+        "⬜ — ще не виконав\n"
+        "✅ — виконав\n"
+        "❌ — завдання провалене / тебе зловили 😏\n\n"
+        "Натискай на завдання, щоб змінити його стан по колу."
+    )
+    lines.append(
+        "\nЯкщо завдання повʼязане з фото або треба підтвердити у організатора — "
+        "натисни «✉ Запит до організатора»."
     )
 
     await message.answer("\n".join(lines), reply_markup=tasks_inline_kb(user))
@@ -1104,22 +1215,28 @@ async def cb_task_toggle(callback: CallbackQuery):
         await callback.answer("Невідоме завдання.", show_alert=True)
         return
 
-    done[idx] = not done[idx]
+    # 0 -> 1 -> 2 -> 0
+    done[idx] = (done[idx] + 1) % 3
     user["tasks_done"] = done
     await save_data()
     await callback.answer("Оновив стан завдання ✅")
 
-    # Оновити повідомлення списку завдань
     lines = ["📋 <b>Твої завдання</b>\n"]
     for i, t in enumerate(tasks):
-        mark = "✅" if done[i] else "⬜"
+        mark = task_state_icon(done[i])
         lines.append(f"{mark} <b>{i + 1}.</b> {t}")
     lines.append(
-        "\nМожеш сам відмічати виконані завдання. "
-        "Якщо потрібен апрув організатора — натисни «✉ Запит до організатора»."
+        "\nПозначення:\n"
+        "⬜ — ще не виконав\n"
+        "✅ — виконав\n"
+        "❌ — завдання провалене / тебе зловили 😏\n\n"
+        "Натискай на завдання, щоб змінювати стан по колу."
     )
 
-    await callback.message.edit_text("\n".join(lines), reply_markup=tasks_inline_kb(user))
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=tasks_inline_kb(user),
+    )
 
 
 @router.callback_query(F.data == "task_ask_org")
@@ -1966,6 +2083,37 @@ async def universal_handler(message: Message):
         await save_data()
         return
 
+        # --- Локальне редагування меню: тільки один пункт ---
+    if action == "edit_dish":
+        PENDING_ACTION.pop(user_id, None)
+        user["menu_dish"] = (message.text or "").strip()
+        await save_data()
+        await message.answer(
+            f"Оновив твою страву 🍽️\nНове значення: {user['menu_dish']}",
+            reply_markup=main_menu_kb(user),
+        )
+        return
+
+    if action == "edit_drink":
+        PENDING_ACTION.pop(user_id, None)
+        user["menu_drink"] = (message.text or "").strip()
+        await save_data()
+        await message.answer(
+            f"Оновив твій напій 🥂\nНове значення: {user['menu_drink']}",
+            reply_markup=main_menu_kb(user),
+        )
+        return
+
+    if action == "edit_dessert":
+        PENDING_ACTION.pop(user_id, None)
+        user["menu_dessert"] = (message.text or "").strip()
+        await save_data()
+        await message.answer(
+            f"Оновив твій десерт 🍰\nНове значення: {user['menu_dessert']}",
+            reply_markup=main_menu_kb(user),
+        )
+        return
+
     if action == "set_dessert":
         PENDING_ACTION.pop(user_id, None)
         user["menu_dessert"] = (message.text or "").strip()
@@ -1990,22 +2138,56 @@ async def universal_handler(message: Message):
         asyncio.create_task(postmenu_followups(bot, user_id))
         return
 
+    # --- Підтвердження завдання (текст + фото/відео) ---
     if action == "task_ask_org":
         PENDING_ACTION.pop(user_id, None)
-        # сюди приходить текстовий опис, фото вже полетять через міст
-        txt = message.text or ""
-        if txt.strip():
-            try:
-                header = (
-                    f"📎 Коментар від гостя щодо завдання "
-                    f"({user.get('name') or user_id}, @{user.get('username') or '-'})\n\n"
+
+        # текст або підпис до фото
+        text_or_caption = (message.text or message.caption or "").strip()
+
+        header = (
+            f"📎 Коментар від гостя щодо завдання "
+            f"({user.get('name') or user_id}, @{user.get('username') or '-'})\n\n"
+        )
+
+        sent_anchor: Optional[Message] = None
+
+        try:
+            # Спочатку відправляємо текст, якщо він є
+            if text_or_caption:
+                sent_anchor = await bot.send_message(
+                    ADMIN_ID,
+                    header + text_or_caption
                 )
-                await bot.send_message(ADMIN_ID, header + txt)
-            except Exception as e:
-                logger.exception("Не зміг передати опис завдання організатору: %s", e)
+
+            # Якщо є медіа — докидаємо його окремо
+            if message.photo or message.video or message.document:
+                media_msg = await bot.copy_message(
+                    ADMIN_ID,
+                    message.chat.id,
+                    message.message_id
+                )
+                # Якщо тексту не було — цей медіа-меседж стає "якорем"
+                if sent_anchor is None:
+                    sent_anchor = media_msg
+
+            # Якщо щось відправили адмінові — реєструємо міст,
+            # щоб організатор міг відповісти «reply» і гість це побачив
+            if sent_anchor:
+                register_bridge_message(
+                    chat_id=sent_anchor.chat.id,  # ADMIN_ID
+                    message_id=sent_anchor.message_id,
+                    peer_id=user_id,
+                    prefix_to_peer="Відповідь організатора щодо завдання: ",
+                    reply_prefix_back="Гість відповів щодо завдання: ",
+                )
+
+        except Exception as e:
+            logger.exception("Не зміг передати info по завданню організатору: %s", e)
+
         await message.answer(
-            "Ок, тепер усе, що ти надішлеш у <b>reply</b> на моє попереднє повідомлення "
-            "з фото/відео — я перешлю організатору."
+            "Ок, я передав інформацію організатору.\n"
+            "Якщо тебе попросять щось дослати — він відповість у цьому чаті 😉"
         )
         return
 
