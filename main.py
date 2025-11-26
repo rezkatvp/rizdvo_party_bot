@@ -1084,7 +1084,6 @@ async def my_look(message: Message):
 
 
 @router.message(F.text == "📜 Наше меню")
-await send_gif(message, TASKS_GIF_ID)
 async def guests_menu_for_user(message: Message):
     user = get_user(message.from_user.id)
     mark_user_active(user)
@@ -1092,6 +1091,8 @@ async def guests_menu_for_user(message: Message):
     lines = ["📜 <b>Наше меню</b>\n"]
     has_any = False
 
+    await send_gif(message, TASKS_GIF_ID)
+    
     for uid, data in USERS.items():
         if not data.get("participant"):
             continue
