@@ -1084,6 +1084,7 @@ async def my_look(message: Message):
 
 
 @router.message(F.text == "📜 Наше меню")
+await send_gif(message, TASKS_GIF_ID)
 async def guests_menu_for_user(message: Message):
     user = get_user(message.from_user.id)
     mark_user_active(user)
@@ -1124,7 +1125,6 @@ async def guests_menu_for_user(message: Message):
         lines.append("Поки ще ніхто не додав своє меню 🤔")
 
     await message.answer("\n".join(lines))
-    await send_gif(message, TASKS_GIF_ID)
 
 
 def ensure_tasks_state(user: Dict[str, Any]) -> list[int]:
