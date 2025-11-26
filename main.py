@@ -49,19 +49,27 @@ TASKS_GIF_ID = "CgACAgIAAxkBAAIGc2klx-Cwde-W_ZSRS5Af3GSxAR_NAAKrggACY8QxSeWebmRm
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не заданий в змінних середовища")
 
-# ================== КОНСТАНТИ ВЕЧІРКИ ==================
+# ================== КОНСТАНТИ ВЕЧІРКИ З ENV ==================
 PARTY_NAME = os.getenv("PARTY_NAME", "Різдвяний Спектр")
-PARTY_LOCATION = os.getenv("PARTY_LOCATION", "Адресу скинемо окремо перед вечіркою 😉")
+PARTY_LOCATION = os.getenv(
+    "PARTY_LOCATION",
+    "Адресу скинемо окремо перед вечіркою 😉"
+)
 PARTY_DATES_TEXT = os.getenv("PARTY_DATES_TEXT", "26 грудня, 18:00")
+
+# нові змінні середовища
+PARTY_ACTIVE = os.getenv("PARTY_ACTIVE", "1")  # "1" або "0"
+PARTY_CODE_ENV = os.getenv("PARTY_CODE")       # код вечірки, який ти задаєш вручну
+PARTY_FEEDBACK_DATE_ENV = os.getenv("PARTY_FEEDBACK_DATE")  # YYYY-MM-DD або порожньо
 
 # ================== АКТИВНА ВЕЧІРКА ==================
 PARTY = {
-    "active": False,
+    "active": PARTY_ACTIVE == "1",
     "name": PARTY_NAME,
     "location": PARTY_LOCATION,
     "dates_text": PARTY_DATES_TEXT,
-    "code": None,
-    "feedback_date": None,  # YYYY-MM-DD, з якого дня просимо відгук
+    "code": PARTY_CODE_ENV,
+    "feedback_date": PARTY_FEEDBACK_DATE_ENV,  # YYYY-MM-DD, з якого дня просимо відгук
 }
 
 
@@ -345,11 +353,6 @@ async def load_data():
         SANTA.started = santa_raw.get("started", False)
         SANTA.budget_text = santa_raw.get("budget_text")
         SANTA.description = santa_raw.get("description")
-
-        party_raw = raw.get("PARTY")
-        if party_raw:
-            PARTY.update(party_raw)
-            apply_party_to_globals()
 
         logger.info("Дані завантажено: %d гостей", len(USERS))
     except Exception as e:
@@ -755,40 +758,50 @@ async def cmd_start(message: Message):
             user["has_valid_code"] = True
             user["party_code"] = current_code
             await save_data()
+
     user["name"] = message.from_user.full_name
     user["username"] = message.from_user.username
 
     PENDING_ACTION.pop(user_id, None)
 
+    # Немає активної вечірки
     if not PARTY.get("active") or not PARTY.get("code"):
+        await send_gif(message, START_GIF_ID)
+        await asyncio.sleep(1)
         await message.answer(
             "Зараз для тебе немає активних вечірок 😌\n\n"
             "Як тільки організатор створить нову тусу і дасть код — ти зможеш зайти сюди знову."
         )
         return
 
+    # Гість вже учасник і має валідний код
     if (
         user.get("participant")
         and user.get("party_code") == PARTY["code"]
         and user.get("has_valid_code")
     ):
         await send_gif(message, START_GIF_ID)
-        await asyncio.sleep(1) 
+        await asyncio.sleep(1)
         await message.answer(
             "Радий бачити тебе знову 🎄\nТи вже в списку гостей. Ось твоє меню 👇",
             reply_markup=main_menu_kb(user),
         )
         return
 
+    # Немає валідного коду — просимо ввести, теж з гіфкою
     if not user.get("has_valid_code") or user.get("party_code") != PARTY["code"]:
+        await send_gif(message, START_GIF_ID)
+        await asyncio.sleep(1)
         await message.answer(
             "Щоб зайти на вечірку, введи, будь ласка, <b>код вечірки</b>, який дав тобі організатор."
         )
         PENDING_ACTION[user_id] = "enter_party_code"
         return
-        await send_gif(message, START_GIF_ID)
-        await asyncio.sleep(1) 
-    
+
+    # Тут юзер вже має валідний код, але ще не підтвердив участь
+    await send_gif(message, START_GIF_ID)
+    await asyncio.sleep(1)
+
     text = (
         "Вау! ✨\n\n"
         f"Ти відкрив бота вечірки <b>«{PARTY_NAME}»</b>!\n\n"
@@ -1680,7 +1693,7 @@ async def admin_party(callback: CallbackQuery):
         return
 
     status = "активна ✅" if PARTY.get("active") else "неактивна ❌"
-    code = PARTY.get("code") or "ще не згенеровано"
+    code = PARTY.get("code") or "не заданий (PARTY_CODE)"
 
     text = (
         "🎉 <b>Налаштування вечірки</b>\n\n"
@@ -1688,35 +1701,13 @@ async def admin_party(callback: CallbackQuery):
         f"Назва: {PARTY_NAME}\n"
         f"Локація: {PARTY_LOCATION}\n"
         f"Дати: {PARTY_DATES_TEXT}\n"
-        f"Код для гостей: <code>{code}</code>\n\n"
-        "Спочатку створи або онови вечірку, потім відправ код гостям."
+        f"Код для гостей: <code>{code}</code>\n"
+        f"Дата старту відгуків: {PARTY.get('feedback_date') or 'не задана'}\n\n"
+        "Змінюється усе через Variables:\n"
+        "<code>PARTY_NAME, PARTY_LOCATION, PARTY_DATES_TEXT, PARTY_ACTIVE, PARTY_CODE, PARTY_FEEDBACK_DATE</code>\n"
+        "Після змін — перезапусти сервіс."
     )
     await callback.message.edit_text(text, reply_markup=admin_party_menu_kb())
-
-
-@router.callback_query(F.data == "admin_party_new")
-async def admin_party_new(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Це тільки для адміна 🙃", show_alert=True)
-        return
-    PENDING_ACTION[callback.from_user.id] = "admin_party_name"
-    await callback.message.answer(
-        "Введи назву вечірки (наприклад: «Різдвяний спектр»)."
-    )
-
-
-@router.callback_query(F.data == "admin_party_deactivate")
-async def admin_party_deactivate(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Це тільки для адміна 🙃", show_alert=True)
-        return
-    PARTY["active"] = False
-    PARTY["code"] = None
-    await save_data()
-    await callback.message.answer(
-        "Я деактивував вечірку. Гості не зможуть зайти, поки ти не створиш нову.",
-        reply_markup=admin_menu_kb(),
-    )
 
 
 @router.callback_query(F.data == "admin_santa")
@@ -2054,12 +2045,16 @@ async def universal_handler(message: Message):
         current_code = (PARTY.get("code") or "").upper()
 
         if not PARTY.get("active") or not current_code:
+            await send_gif(message, START_GIF_ID)
+            await asyncio.sleep(1)
             await message.answer(
                 "Зараз немає активних вечірок. Запитай код у організатора, коли він створить нову 😊"
             )
             return
 
         if code != current_code:
+            await send_gif(message, START_GIF_ID)
+            await asyncio.sleep(1)
             await message.answer(
                 "Код не підходить 😔\n"
                 "Перевір, будь ласка, чи все правильно, або уточни у організатора."
@@ -2092,8 +2087,9 @@ async def universal_handler(message: Message):
             ]
         )
 
-        await message.answer(text, reply_markup=kb)
         await send_gif(message, START_GIF_ID)
+        await asyncio.sleep(1)
+        await message.answer(text, reply_markup=kb)
         return
 
     # --- Моє меню (покроково з затримками) ---
@@ -2405,67 +2401,6 @@ async def universal_handler(message: Message):
                 logger.exception("Не зміг надіслати broadcast користувачу %s: %s", uid, e)
         await message.answer(f"Розіслав оголошення {sent} учасникам 🎄")
         return
-
-    # --- Admin: створити / оновити вечірку (wizard) ---
-    if action == "admin_party_name":
-        PENDING_ACTION.pop(user_id, None)
-        if user_id != ADMIN_ID:
-            await message.answer("Це тільки для адміна 🙃")
-            return
-        PARTY["name"] = (message.text or "").strip()
-        apply_party_to_globals()
-        await save_data()
-        PENDING_ACTION[user_id] = "admin_party_location"
-        await message.answer(
-            "Супер! Тепер введи <b>локацію</b> (адресу) вечірки.\n"
-            "Наприклад: «Київ, вул. Таємна 7»."
-        )
-        return
-
-    if action == "admin_party_location":
-        PENDING_ACTION.pop(user_id, None)
-        if user_id != ADMIN_ID:
-            await message.answer("Це тільки для адміна 🙃")
-            return
-        PARTY["location"] = (message.text or "").strip()
-        apply_party_to_globals()
-        await save_data()
-        PENDING_ACTION[user_id] = "admin_party_dates"
-        await message.answer(
-            "Ок! Тепер введи текст про дату/час.\n"
-            "Наприклад: «26 грудня, з 18:00 до відкриття метро» або «24–25 грудня, 19:00»."
-        )
-        return
-
-    if action == "admin_party_dates":
-        PENDING_ACTION.pop(user_id, None)
-        if user_id != ADMIN_ID:
-            await message.answer("Це тільки для адміна 🙃")
-            return
-        PARTY["dates_text"] = (message.text or "").strip()
-        apply_party_to_globals()
-        await save_data()
-        PENDING_ACTION[user_id] = "admin_party_feedback_date"
-        await message.answer(
-            "Тепер введи дату, з якої просити відгук (у форматі YYYY-MM-DD), "
-            "або '-' якщо не хочеш вмикати автоматичний день фідбеку."
-        )
-        return
-
-    if action == "admin_party_feedback_date":
-        PENDING_ACTION.pop(user_id, None)
-        if user_id != ADMIN_ID:
-            await message.answer("Це тільки для адміна 🙃")
-            return
-        txt_fb = (message.text or "").strip()
-        if txt_fb == "-":
-            PARTY["feedback_date"] = None
-        else:
-            PARTY["feedback_date"] = txt_fb
-
-        PARTY["active"] = True
-        PARTY["code"] = generate_party_code()
-        await save_data()
 
         await message.answer(
             "Готово! Я оновив вечірку:\n\n"
