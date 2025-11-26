@@ -772,11 +772,12 @@ async def cmd_start(message: Message):
         and user.get("party_code") == PARTY["code"]
         and user.get("has_valid_code")
     ):
+        await send_gif(message, START_GIF_ID)
+        await asyncio.sleep(1) 
         await message.answer(
             "Радий бачити тебе знову 🎄\nТи вже в списку гостей. Ось твоє меню 👇",
             reply_markup=main_menu_kb(user),
         )
-        await send_gif(message, START_GIF_ID)
         return
 
     if not user.get("has_valid_code") or user.get("party_code") != PARTY["code"]:
@@ -785,7 +786,9 @@ async def cmd_start(message: Message):
         )
         PENDING_ACTION[user_id] = "enter_party_code"
         return
-
+        await send_gif(message, START_GIF_ID)
+        await asyncio.sleep(1) 
+    
     text = (
         "Вау! ✨\n\n"
         f"Ти відкрив бота вечірки <b>«{PARTY_NAME}»</b>!\n\n"
@@ -808,7 +811,6 @@ async def cmd_start(message: Message):
     )
 
     await message.answer(text, reply_markup=kb)
-    await send_gif(message, START_GIF_ID)
 
 
 @router.callback_query(F.data == "party_yes")
